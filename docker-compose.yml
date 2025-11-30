@@ -1,0 +1,8 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: battleship-backend:dev   # entspricht: -t battleship-backend:dev
+    ports:
+      - "8080:8080"
