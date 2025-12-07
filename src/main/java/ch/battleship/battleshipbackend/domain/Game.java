@@ -11,6 +11,7 @@ import lombok.Setter;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 @Entity
 @Table(name = "games")
@@ -41,11 +42,18 @@ public class Game extends BaseEntity {
     @JoinColumn(name = "game_id")
     private List<Shot> shots = new ArrayList<>();
 
+    public Game(GameConfiguration config) {
+        this.status = GameStatus.WAITING;
+        this.gameCode = UUID.randomUUID().toString();
+        this.config = config;
+    }
+
     public Game(String gameCode, GameConfiguration config) {
         this.status = GameStatus.WAITING;
         this.gameCode = gameCode;
         this.config = config;
     }
+
 
     public void addPlayer(Player player) {
         this.players.add(player);
