@@ -23,6 +23,11 @@ public class LobbyController {
     @Operation(summary = "Automatically joins an open lobby or creates a new one")
     @PostMapping("/auto-join")
     public LobbyDto autoJoin(@RequestBody JoinLobbyRequest request) {
+        /*
+            Wir verwenden hier absichtlich eine andere DTO die nicht der Domain enstpricht
+            um eine bessere Dev expierence im front-end zu erhalten.
+         */
+
         String username = request.username();
 
         Lobby lobby = lobbyService.joinOrCreateLobby(username);
