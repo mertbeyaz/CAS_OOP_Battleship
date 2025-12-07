@@ -7,6 +7,7 @@ import ch.battleship.battleshipbackend.domain.Game;
 import ch.battleship.battleshipbackend.web.api.dto.*;
 import io.swagger.v3.oas.annotations.Operation;
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -88,4 +89,22 @@ public class GameController {
         }
     }
 
+    @Operation(summary = "Get ASCII view of a board")
+    @GetMapping(
+            value = "/{gameCode}/boards/{boardId}/ascii",
+            produces = MediaType.TEXT_PLAIN_VALUE
+    )
+    public ResponseEntity<String> getBoardAscii(@PathVariable String gameCode,
+                                                @PathVariable UUID boardId,
+                                                @RequestParam(name = "showShips", defaultValue = "true")
+                                                boolean showShips) {
+        try {
+            String ascii = gameService.getBoardAscii(gameCode, boardId, showShips);
+            return ResponseEntity.ok(ascii);
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
 }

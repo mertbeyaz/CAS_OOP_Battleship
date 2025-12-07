@@ -198,6 +198,63 @@ class GameServiceTest {
         verify(gameRepository, never()).save(any());
     }
 
+    @Test
+    void joinGame_shouldAutoPlaceFleetOnBoard_accordingToDefaultConfig() {
+        // Arrange
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        String code = "TEST-CODE";
+        Game game = new Game(code, config); // status = WAITING, noch keine Player/Boards
+
+        when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
+        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Act
+        Game result = gameService.joinGame(code, "Player1");
+
+        // Assert
+        assertThat(result.getBoards()).hasSize(1);
+        Board board = result.getBoards().get(0);
+
+        // 1) Es sollten Schiffe platziert sein
+        assertThat(board.getPlacements())
+                .as("Es sollten ShipPlacements auf dem Board existieren")
+                .isNotEmpty();
+
+        // 2) Für die Default-Config: "2x2,2x3,1x4,1x5"
+        //    => 2x DESTROYER, 2x CRUISER, 1x BATTLESHIP, 1x CARRIER
+        var types = board.getPlacements().stream()
+                .map(p -> p.getShip().getType())
+                .toList();
+
+        assertThat(types)
+                .containsExactlyInAnyOrder(
+                        ShipType.DESTROYER, ShipType.DESTROYER,
+                        ShipType.CRUISER,   ShipType.CRUISER,
+                        ShipType.BATTLESHIP,
+                        ShipType.CARRIER
+                );
+
+        // 3) Alle Koordinaten müssen innerhalb des Boards liegen und dürfen sich nicht überlappen
+        var allCoords = board.getPlacements().stream()
+                .flatMap(p -> p.getCoveredCoordinates().stream())
+                .toList();
+
+        // Board-Grenzen
+        assertThat(allCoords)
+                .allSatisfy(c -> {
+                    assertThat(c.getX()).isBetween(0, board.getWidth() - 1);
+                    assertThat(c.getY()).isBetween(0, board.getHeight() - 1);
+                });
+
+        // Keine doppelten Koordinaten (keine Überlappung)
+        assertThat(allCoords)
+                .as("Kein Feld darf von zwei verschiedenen Schiffen belegt werden")
+                .doesNotHaveDuplicates();
+
+        // Debug-Ausgabe:
+        // printBoard(board);
+    }
+
     // ------------------------------------------------------------------------------------
     // fireShot (Service-Logik, inkl. Validierung + Repo)
     // ------------------------------------------------------------------------------------
@@ -504,6 +561,116 @@ class GameServiceTest {
         verifyNoMoreInteractions(gameRepository);
     }
 
+    @Test
+    void getBoardAscii_shouldRenderShipsAndShotsWithSymbols_whenShowShipsIsTrue() {
+        // Arrange
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        String code = "TEST-CODE";
+        Game game = new Game(code, config);
+
+        Player attacker = new Player("Attacker");
+        Player defender = new Player("Defender");
+        game.addPlayer(attacker);
+        game.addPlayer(defender);
+
+        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
+
+        // Schiff: DESTROYER bei (3,3) horizontal -> Felder (3,3) und (4,3)
+        Ship ship = new Ship(ShipType.DESTROYER);
+        defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
+
+        game.addBoard(defenderBoard);
+
+        // Zwei Schüsse auf dieses Board (direkt über Domain)
+        game.fireShot(attacker, defenderBoard, new Coordinate(3, 3)); // HIT
+        game.fireShot(attacker, defenderBoard, new Coordinate(0, 0)); // MISS
+
+        // IDs simulieren
+        UUID boardId = UUID.randomUUID();
+        setId(defenderBoard, boardId);
+
+        when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
+
+        // Act
+        String ascii = gameService.getBoardAscii(code, boardId, true);
+        System.out.println(ascii);
+        // Assert: Header
+        assertThat(ascii)
+                .contains("Board (" + config.getBoardWidth() + "x" + config.getBoardHeight() + ")");
+
+        String[] lines = ascii.split("\\R");
+
+        // Layout:
+        // 0: "Board (10x10)"
+        // 1: "   0 1 2 3 4 5 6 7 8 9 "
+        // 2: " 0 . . . . . ..."
+        // => Zeile für y = n: index 2 + n
+        //    Spalte x: char an Position 3 + x*2
+
+        // Zeile y = 0
+        String row0 = lines[2];
+        // (0,0) = Miss -> 'O'
+        assertThat(row0.charAt(3 + 0 * 2)).isEqualTo('O');
+
+        // Zeile y = 3
+        String row3 = lines[2 + 3];
+        // (3,3) = Hit -> 'X'
+        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X');
+        // (4,3) = ungetroffenes Schiff -> 'S'
+        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('S');
+
+    }
+
+    @Test
+    void getBoardAscii_shouldHideShipsWhenShowShipsIsFalse() {
+        // Arrange
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        String code = "TEST-CODE";
+        Game game = new Game(code, config);
+
+        Player attacker = new Player("Attacker");
+        Player defender = new Player("Defender");
+        game.addPlayer(attacker);
+        game.addPlayer(defender);
+
+        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
+
+        // Schiff: DESTROYER bei (3,3) horizontal
+        Ship ship = new Ship(ShipType.DESTROYER);
+        defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
+
+        game.addBoard(defenderBoard);
+
+        // Shots
+        game.fireShot(attacker, defenderBoard, new Coordinate(3, 3)); // HIT
+        game.fireShot(attacker, defenderBoard, new Coordinate(0, 0)); // MISS
+
+        UUID boardId = UUID.randomUUID();
+        setId(defenderBoard, boardId);
+
+        when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
+
+        // Act
+        String ascii = gameService.getBoardAscii(code, boardId, false);
+        System.out.println(ascii);
+
+        // Assert
+        String[] lines = ascii.split("\\R");
+
+        // Zeile y = 0
+        String row0 = lines[2];
+        // (0,0) = Miss -> 'O'
+        assertThat(row0.charAt(3 + 0 * 2)).isEqualTo('O');
+
+        // Zeile y = 3
+        String row3 = lines[2 + 3];
+        // (3,3) = Hit -> 'X'
+        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X');
+        // (4,3) = ungetroffenes Schiff, aber showShips=false -> '.'
+        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('.');
+
+    }
+
     // Helper Methode um die Id manuell zu setzen, dies wird
     // in einem realen Spiel durch JPA gesetzt
     private void setId(BaseEntity entity, UUID id) {
@@ -513,6 +680,39 @@ class GameServiceTest {
             idField.set(entity, id);
         } catch (NoSuchFieldException | IllegalAccessException e) {
             throw new RuntimeException("Failed to set id via reflection", e);
+        }
+    }
+
+    private void printBoard(Board board) {
+        int width = board.getWidth();
+        int height = board.getHeight();
+
+        char[][] grid = new char[height][width];
+
+        // alles zuerst mit '.' füllen
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                grid[y][x] = '.';
+            }
+        }
+
+        // Schiffe einzeichnen
+        for (ShipPlacement placement : board.getPlacements()) {
+            for (Coordinate c : placement.getCoveredCoordinates()) {
+                int x = c.getX();
+                int y = c.getY();
+                // einfache Darstellung: S = Ship
+                grid[y][x] = 'S';
+            }
+        }
+
+        // Ausgabe in die Konsole (Test-Output)
+        System.out.println("Board (" + width + "x" + height + "):");
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                System.out.print(grid[y][x] + " ");
+            }
+            System.out.println();
         }
     }
 }
