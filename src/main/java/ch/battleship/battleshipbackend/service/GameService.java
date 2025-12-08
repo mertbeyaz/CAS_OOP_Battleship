@@ -48,9 +48,8 @@ public class GameService {
     }
 
     public Game createNewGame() {
-        String gameCode = UUID.randomUUID().toString();
         GameConfiguration config = GameConfiguration.defaultConfig();
-        Game game = new Game(gameCode, config);
+        Game game = new Game(config);
         return gameRepository.save(game);
     }
 
@@ -207,6 +206,18 @@ public class GameService {
                 .toList();
 
         return renderBoardAscii(board, shotsOnThisBoard, showShips);
+    }
+
+    @Transactional
+    public Game createGameAndJoinFirstPlayer(String username) {
+        GameConfiguration config = GameConfiguration.defaultConfig();
+
+        // Neues Game anlegen (Code + WAITING im Konstruktor)
+        Game game = new Game(config);
+        game = gameRepository.save(game); // ID & Persistence
+
+        // Erster Spieler joined über die gleiche Logik wie später Spieler 2
+        return joinGame(game.getGameCode(), username);
     }
 
     private List<ShipType> parseFleetDefinition(GameConfiguration config) {

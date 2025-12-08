@@ -29,9 +29,9 @@ class GameShootingTest {
         game.addPlayer(defender);
 
         Board defenderBoard = new Board(
-                game.getConfig().getBoardWidth(),
-                game.getConfig().getBoardHeight(),
-                defender
+            game.getConfig().getBoardWidth(),
+            game.getConfig().getBoardHeight(),
+            defender
         );
 
         // Schiff: DESTROYER (size 2) horizontal bei (3,3) -> (4,3)
