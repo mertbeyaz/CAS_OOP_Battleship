@@ -7,6 +7,7 @@ import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.domain.enums.ShipType;
 import ch.battleship.battleshipbackend.domain.enums.ShotResult;
 import ch.battleship.battleshipbackend.repository.GameRepository;
+import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.ShotEventDto;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,9 @@ class GameServiceWebSocketTest {
 
     @Mock
     private GameRepository gameRepository;
+
+    @Mock
+    private ShotRepository shotRepository;
 
     @Mock
     private SimpMessagingTemplate messagingTemplate;
@@ -83,6 +87,7 @@ class GameServiceWebSocketTest {
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(shotRepository.save(any(Shot.class))).thenAnswer(inv -> inv.getArgument(0));
 
         ArgumentCaptor<ShotEventDto> eventCaptor = ArgumentCaptor.forClass(ShotEventDto.class);
 

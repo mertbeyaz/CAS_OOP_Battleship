@@ -7,6 +7,7 @@ import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.domain.enums.ShipType;
 import ch.battleship.battleshipbackend.domain.enums.ShotResult;
 import ch.battleship.battleshipbackend.repository.GameRepository;
+import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
 import ch.battleship.battleshipbackend.web.api.dto.ShipPlacementDto;
@@ -33,6 +34,9 @@ class GameServiceTest {
 
     @Mock
     private GameRepository gameRepository;
+
+    @Mock
+    private ShotRepository shotRepository;
 
     @InjectMocks
     private GameService gameService;
@@ -278,8 +282,11 @@ class GameServiceTest {
         );
 
         Ship ship = new Ship(ShipType.DESTROYER); // size 2
-        defenderBoard.placeShip(ship, new Coordinate(3, 3),
-                ch.battleship.battleshipbackend.domain.enums.Orientation.HORIZONTAL);
+        defenderBoard.placeShip(
+                ship,
+                new Coordinate(3, 3),
+                Orientation.HORIZONTAL
+        );
 
         game.addBoard(defenderBoard);
 
@@ -291,16 +298,19 @@ class GameServiceTest {
         setId(attacker, attackerId);
         setId(defender, defenderId);
         setId(defenderBoard, boardId);
-        // game selbst braucht keine Id für diese Logik, kann aber auch eine bekommen:
-        // setId(game, UUID.randomUUID());
 
+        // --- Stubbing ---
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // ShotRepository: gebe einfach das gleiche Shot-Objekt zurück,
+        // das reinkommt (wie eine "Fake-DB")
+        when(shotRepository.save(any(Shot.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // Act
         Shot shot = gameService.fireShot(
                 code,
-                attackerId,      // explizit die gesetzte Id verwenden
+                attackerId,
                 boardId,
                 3,
                 3
@@ -313,8 +323,13 @@ class GameServiceTest {
         assertThat(shot.getTargetBoard()).isEqualTo(defenderBoard);
         assertThat(game.getShots()).hasSize(1);
 
+        // Interaktionen prüfen
+        verify(gameRepository, times(1)).findByGameCode(code);
         verify(gameRepository, times(1)).save(game);
+        verify(shotRepository, times(1)).save(any(Shot.class));
+        verifyNoMoreInteractions(gameRepository, shotRepository);
     }
+
 
     @Test
     void fireShot_shouldThrowEntityNotFound_whenGameDoesNotExist() {

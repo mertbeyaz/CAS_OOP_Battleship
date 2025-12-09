@@ -7,6 +7,7 @@ import ch.battleship.battleshipbackend.domain.enums.ShipType;
 import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.repository.GameRepository;
 
+import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
 import ch.battleship.battleshipbackend.web.api.dto.ShipPlacementDto;
 import ch.battleship.battleshipbackend.web.api.dto.ShotDto;
@@ -33,18 +34,21 @@ public class GameService {
 
     private final GameRepository gameRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final ShotRepository shotRepository;
 
     // Konstruktor für Spring (mit WebSocket)
     @Autowired
-    public GameService(GameRepository gameRepository, SimpMessagingTemplate messagingTemplate) {
+    public GameService(GameRepository gameRepository, SimpMessagingTemplate messagingTemplate, ShotRepository shotRepository) {
         this.gameRepository = gameRepository;
         this.messagingTemplate = messagingTemplate;
+        this.shotRepository = shotRepository;
     }
 
     // Zusätzlicher Konstruktor für Tests, die nur den Repo-Mock haben
     public GameService(GameRepository gameRepository) {
         this.gameRepository = gameRepository;
         this.messagingTemplate = null; // in Tests kein WebSocket nötig
+        this.shotRepository = null;
     }
 
     public Game createNewGame() {
@@ -121,7 +125,8 @@ public class GameService {
 
         Coordinate coordinate = new Coordinate(x, y);
         Shot shot = game.fireShot(shooter, targetBoard, coordinate);
-
+        // Save shot to get also the id
+        Shot persistedShot = shotRepository.save(shot);
         gameRepository.save(game); // Shots werden per Cascade mitgespeichert
 
         // --- WebSocket Event bauen & senden ---
@@ -157,7 +162,7 @@ public class GameService {
             messagingTemplate.convertAndSend(destination, event);
         }
 
-        return shot;
+        return persistedShot;
     }
 
 
