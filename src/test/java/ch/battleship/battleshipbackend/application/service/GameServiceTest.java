@@ -1,5 +1,6 @@
 package ch.battleship.battleshipbackend.application.service;
 
+import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
 import ch.battleship.battleshipbackend.domain.*;
 import ch.battleship.battleshipbackend.domain.common.BaseEntity;
 import ch.battleship.battleshipbackend.domain.enums.GameStatus;
@@ -686,17 +687,6 @@ class GameServiceTest {
 
     }
 
-    // Helper Methode um die Id manuell zu setzen, dies wird
-    // in einem realen Spiel durch JPA gesetzt
-    private void setId(BaseEntity entity, UUID id) {
-        try {
-            Field idField = BaseEntity.class.getDeclaredField("id");
-            idField.setAccessible(true);
-            idField.set(entity, id);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            throw new RuntimeException("Failed to set id via reflection", e);
-        }
-    }
 
     private void printBoard(Board board) {
         int width = board.getWidth();
