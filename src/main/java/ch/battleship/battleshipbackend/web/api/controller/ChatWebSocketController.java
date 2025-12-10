@@ -11,7 +11,7 @@ import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Controller;
-import org.springframework.transaction.annotation.Transactional;  // ⬅️ wichtig
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.Objects;
@@ -29,7 +29,7 @@ public class ChatWebSocketController {
         this.messagingTemplate = messagingTemplate;
     }
 
-    @Transactional   // ⬅️ DAS ist der Fix
+    @Transactional
     @MessageMapping("/games/{gameCode}/chat")
     public void handleChatMessage(@Payload IncomingChatMessage incoming,
                                   @DestinationVariable String gameCode) {
