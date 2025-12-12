@@ -42,6 +42,10 @@ public class Game extends BaseEntity {
     @JoinColumn(name = "game_id")
     private List<Shot> shots = new ArrayList<>();
 
+    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true)
+    @JoinColumn(name = "game_id")
+    private List<ChatMessage> messages = new ArrayList<>();
+
     public Game(GameConfiguration config) {
         this.status = GameStatus.WAITING;
         this.gameCode = UUID.randomUUID().toString();
@@ -109,5 +113,9 @@ public class Game extends BaseEntity {
         Shot shot = new Shot(coordinate, result, shooter, targetBoard);
         addShot(shot);
         return shot;
+    }
+
+    public void addMessage(ChatMessage message) {
+        this.messages.add(message);
     }
 }
