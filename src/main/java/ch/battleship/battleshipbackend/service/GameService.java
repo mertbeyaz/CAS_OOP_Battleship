@@ -83,13 +83,14 @@ public class GameService {
                 player
         );
 
-        // Flotte auf dem Board platzieren
         autoPlaceFleet(board, game.getConfig());
 
         game.addBoard(board);
 
+        // When the second player joins, we switch to SETUP.
+        // Boards can still be re-rolled/confirmed. Shooting is only allowed in RUNNING.
         if (currentPlayers + 1 == 2) {
-            game.setStatus(GameStatus.RUNNING);
+            game.setStatus(GameStatus.SETUP);
         }
 
         return gameRepository.save(game);
@@ -165,7 +166,6 @@ public class GameService {
         return persistedShot;
     }
 
-
     public BoardStateDto getBoardState(String gameCode, UUID boardId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -190,9 +190,71 @@ public class GameService {
                 board.getHeight(),
                 board.getOwner().getId(),
                 board.getOwner().getUsername(),
+                board.isLocked(),
                 ships,
                 shotsOnThisBoard
         );
+    }
+    /**
+     * Re-roll (auto place) the fleet for the given player's board.
+     * Allowed only in SETUP and only if the board is not locked yet.
+     */
+    public BoardStateDto rerollBoard(String gameCode, UUID playerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.SETUP) {
+            throw new IllegalStateException("Cannot reroll board when game is not in SETUP");
+        }
+
+        Board board = game.getBoards().stream()
+                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
+
+        if (board.isLocked()) {
+            throw new IllegalStateException("Board is locked and cannot be rerolled");
+        }
+
+        // reset placements and generate again
+        board.clearPlacements();
+        autoPlaceFleet(board, game.getConfig());
+
+        gameRepository.save(game);
+
+        return getBoardState(gameCode, board.getId());
+    }
+
+    /**
+     * Confirm (lock) the given player's board. When both boards are locked, the game becomes RUNNING.
+     */
+    public Game confirmBoard(String gameCode, UUID playerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.SETUP) {
+            throw new IllegalStateException("Cannot confirm board when game is not in SETUP");
+        }
+
+        Board board = game.getBoards().stream()
+                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
+
+        // basic validation: must have placements for all ships as per fleet definition
+        int expectedShips = parseFleetDefinition(game.getConfig()).size();
+        if (board.getPlacements().size() != expectedShips) {
+            throw new IllegalStateException("Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size());
+        }
+
+        board.setLocked(true);
+
+        boolean allLocked = game.getBoards().stream().allMatch(Board::isLocked);
+        if (allLocked) {
+            game.setStatus(GameStatus.RUNNING);
+        }
+
+        return gameRepository.save(game);
     }
 
 

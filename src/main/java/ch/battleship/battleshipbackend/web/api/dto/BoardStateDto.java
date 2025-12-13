@@ -9,6 +9,7 @@ public record BoardStateDto(
         int height,
         UUID ownerId,
         String ownerUsername,
+        boolean locked,
         List<ShipPlacementDto> ships,
         List<ShotDto> shotsOnThisBoard
 ) { }

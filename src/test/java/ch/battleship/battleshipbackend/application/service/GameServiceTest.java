@@ -138,7 +138,7 @@ class GameServiceTest {
     }
 
     @Test
-    void joinGame_secondPlayer_shouldSetStatusRunning_andCreateSecondBoard() {
+    void joinGame_secondPlayer_shouldSetStatusSetup_andCreateSecondBoard() {
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -163,7 +163,7 @@ class GameServiceTest {
         assertThat(result.getBoards())
                 .anyMatch(b -> b.getOwner().equals(p2));
 
-        assertThat(result.getStatus()).isEqualTo(GameStatus.RUNNING);
+        assertThat(result.getStatus()).isEqualTo(GameStatus.SETUP);
         verify(gameRepository, times(1)).save(game);
     }
 

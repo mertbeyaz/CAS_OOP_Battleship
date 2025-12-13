@@ -36,10 +36,20 @@ public class Board extends BaseEntity {
     @JoinColumn(name = "board_id") // FK in ship_placements
     private List<ShipPlacement> placements = new ArrayList<>();
 
+    /**
+     * When locked, the owner confirmed the board and it must not be modified anymore.
+     */
+    @Column(nullable = false)
+    private boolean locked = false;
+
     public Board(int width, int height, Player owner) {
         this.width = width;
         this.height = height;
         this.owner = owner;
+    }
+
+    public void clearPlacements() {
+        this.placements.clear();
     }
 
     /**

@@ -107,4 +107,31 @@ public class GameController {
             return ResponseEntity.badRequest().build();
         }
     }
+
+    @Operation(summary = "Re-roll (auto-place) the fleet for the player's board (SETUP only)")
+    @PostMapping("/{gameCode}/players/{playerId}/board/reroll")
+    public ResponseEntity<BoardStateDto> rerollBoard(@PathVariable String gameCode,
+                                                     @PathVariable UUID playerId) {
+        try {
+            BoardStateDto state = gameService.rerollBoard(gameCode, playerId);
+            return ResponseEntity.ok(state);
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
+    @Operation(summary = "Confirm (lock) the player's board. When both confirmed -> game becomes RUNNING")
+    @PostMapping("/{gameCode}/players/{playerId}/board/confirm")
+    public ResponseEntity<GameDto> confirmBoard(@PathVariable String gameCode, @PathVariable UUID playerId) {
+        try {
+            Game game = gameService.confirmBoard(gameCode, playerId);
+            return ResponseEntity.ok(GameDto.from(game));
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
 }
