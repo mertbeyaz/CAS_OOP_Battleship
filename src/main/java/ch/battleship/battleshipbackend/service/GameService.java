@@ -8,10 +8,7 @@ import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.repository.GameRepository;
 
 import ch.battleship.battleshipbackend.repository.ShotRepository;
-import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
-import ch.battleship.battleshipbackend.web.api.dto.ShipPlacementDto;
-import ch.battleship.battleshipbackend.web.api.dto.ShotDto;
-import ch.battleship.battleshipbackend.web.api.dto.ShotEventDto;
+import ch.battleship.battleshipbackend.web.api.dto.*;
 import jakarta.persistence.EntityNotFoundException;
 
 import org.springframework.http.MediaType;
@@ -159,7 +156,7 @@ public class GameService {
                     nextPlayerName
             );
 
-            String destination = "/topic/games/" + gameCode;
+            String destination = "/topic/games/" + gameCode + "/shots";
             messagingTemplate.convertAndSend(destination, event);
         }
 
@@ -241,10 +238,13 @@ public class GameService {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
 
-        // basic validation: must have placements for all ships as per fleet definition
         int expectedShips = parseFleetDefinition(game.getConfig()).size();
         if (board.getPlacements().size() != expectedShips) {
             throw new IllegalStateException("Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size());
+        }
+
+        if (board.isLocked()) {
+            throw new IllegalStateException("Board is already confirmed");
         }
 
         board.setLocked(true);
@@ -254,6 +254,21 @@ public class GameService {
             game.setStatus(GameStatus.RUNNING);
         }
 
+        // erst speichern, dann Event senden (Event enthält finalen Status)
+        Game saved = gameRepository.save(game);
+
+        // --- WebSocket Event bauen & senden ---
+        if (messagingTemplate != null) { // in Unit-Tests kann das null sein
+            Player player = saved.getPlayers().stream()
+                    .filter(p -> Objects.equals(p.getId(), playerId))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("Player not found in this game"));
+
+            GameEventDto event = GameEventDto.boardConfirmed(saved, player);
+
+            String destination = "/topic/games/" + gameCode + "/events";
+            messagingTemplate.convertAndSend(destination, event);
+        }
         return gameRepository.save(game);
     }
 
