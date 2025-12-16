@@ -101,7 +101,7 @@ class GameServiceWebSocketTest {
         );
 
         // Assert – prüfen, dass ein WS-Event gesendet wurde
-        String expectedDestination = "/topic/games/" + code;
+        String expectedDestination = "/topic/games/" + code + "/shots";
         verify(messagingTemplate, times(1))
                 .convertAndSend(eq(expectedDestination), eventCaptor.capture());
 
