@@ -11,19 +11,13 @@ import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.web.api.dto.*;
 import jakarta.persistence.EntityNotFoundException;
 
-import org.springframework.http.MediaType;
-
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Random;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Service
 @Transactional
@@ -101,6 +95,14 @@ public class GameService {
             throw new IllegalStateException("Cannot fire shot when game is not RUNNING");
         }
 
+        if (game.getCurrentTurnPlayerId() == null) {
+            throw new IllegalStateException("Game has no current turn player set");
+        }
+
+        if (!Objects.equals(game.getCurrentTurnPlayerId(), shooterId)) {
+            throw new IllegalStateException("It is not this player's turn");
+        }
+
         Player shooter = game.getPlayers().stream()
                 .filter(p -> Objects.equals(p.getId(), shooterId))
                 .findFirst()
@@ -111,53 +113,73 @@ public class GameService {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Board does not belong to this game"));
 
-        // Optional: verhindern, dass man auf das eigene Board schießt
         if (Objects.equals(targetBoard.getOwner().getId(), shooterId)) {
             throw new IllegalStateException("Player cannot shoot at own board");
         }
 
-        // Bounds Check
         if (x < 0 || x >= targetBoard.getWidth() || y < 0 || y >= targetBoard.getHeight()) {
             throw new IllegalArgumentException("Shot coordinate out of board bounds");
         }
 
         Coordinate coordinate = new Coordinate(x, y);
         Shot shot = game.fireShot(shooter, targetBoard, coordinate);
-        // Save shot to get also the id
+
         Shot persistedShot = shotRepository.save(shot);
-        gameRepository.save(game); // Shots werden per Cascade mitgespeichert
 
-        // --- WebSocket Event bauen & senden ---
-        if (messagingTemplate != null) { // in Unit-Tests kann das null sein
-            String attackerName = shooter.getUsername();
-            String defenderName = targetBoard.getOwner().getUsername();
-
-            // simple Koordinaten-Repräsentation, z.B. "3,5"
-            String coordinateStr = x + "," + y;
-
-            boolean hit = shot.getResult() == ShotResult.HIT || shot.getResult() == ShotResult.SUNK;
-            boolean shipSunk = shot.getResult() == ShotResult.SUNK;
-
-            // "nächster Spieler" = der andere im 2-Spieler-Game
-            String nextPlayerName = game.getPlayers().stream()
+        // TURN LOGIC:
+        // - ALREADY_SHOT: Turn bleibt (sonst könnte man Turn verlieren durch Fehlklick)
+        // - HIT/SUNK: Turn bleibt
+        // - MISS: Turn wechseln
+        if (shot.getResult() == ShotResult.MISS) {
+            UUID nextTurn = game.getPlayers().stream()
                     .filter(p -> !Objects.equals(p.getId(), shooterId))
-                    .map(Player::getUsername)
+                    .map(Player::getId)
                     .findFirst()
-                    .orElse(attackerName); // Fallback, falls nur 1 Spieler
+                    .orElse(shooterId);
+            game.setCurrentTurnPlayerId(nextTurn);
+        }
 
-            ShotEventDto event = new ShotEventDto(
-                    gameCode,
-                    attackerName,
-                    defenderName,
-                    coordinateStr,
-                    hit,
-                    shipSunk,
-                    game.getStatus(),
-                    nextPlayerName
+        // WIN CHECK: alle Schiffe des Defenders versenkt?
+        boolean defenderAllSunk = targetBoard.getPlacements().stream()
+                .allMatch(p -> p.getCoveredCoordinates().stream().allMatch(shipCoord ->
+                        game.getShots().stream()
+                                .filter(s -> s.getTargetBoard().equals(targetBoard))
+                                .anyMatch(s -> s.getCoordinate().equals(shipCoord))
+                                || shipCoord.equals(coordinate) // aktueller Schuss
+                ));
+
+        if (defenderAllSunk) {
+            game.setStatus(GameStatus.FINISHED);
+            game.setWinnerPlayerId(shooter.getId());
+        }
+
+        Game savedGame = gameRepository.save(game);
+
+        // EVENTS
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+            Player defender = targetBoard.getOwner();
+
+            // SHOT_FIRED
+            messagingTemplate.convertAndSend(destination,
+                    GameEventDto.shotFired(savedGame, shooter, defender, x, y, shot.getResult())
             );
 
-            String destination = "/topic/games/" + gameCode + "/shots";
-            messagingTemplate.convertAndSend(destination, event);
+            // Wenn finished -> GAME_FINISHED, sonst TURN_CHANGED
+            if (savedGame.getStatus() == GameStatus.FINISHED) {
+                messagingTemplate.convertAndSend(destination,
+                        GameEventDto.gameFinished(savedGame, shooter)
+                );
+            } else {
+                Player currentTurn = savedGame.getPlayers().stream()
+                        .filter(p -> Objects.equals(p.getId(), savedGame.getCurrentTurnPlayerId()))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
+
+                messagingTemplate.convertAndSend(destination,
+                        GameEventDto.turnChanged(savedGame, currentTurn, shot.getResult())
+                );
+            }
         }
 
         return persistedShot;
@@ -178,7 +200,11 @@ public class GameService {
 
         var shotsOnThisBoard = game.getShots().stream()
                 .filter(s -> s.getTargetBoard().equals(board))
-                .map(ShotDto::from)
+                .map(s -> Map.<String, Object>of(
+                        "x", s.getCoordinate().getX(),
+                        "y", s.getCoordinate().getY(),
+                        "result", s.getResult().name()
+                ))
                 .toList();
 
         return new BoardStateDto(
@@ -238,9 +264,12 @@ public class GameService {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
 
+        // basic validation: must have placements for all ships as per fleet definition
         int expectedShips = parseFleetDefinition(game.getConfig()).size();
         if (board.getPlacements().size() != expectedShips) {
-            throw new IllegalStateException("Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size());
+            throw new IllegalStateException(
+                    "Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size()
+            );
         }
 
         if (board.isLocked()) {
@@ -252,25 +281,46 @@ public class GameService {
         boolean allLocked = game.getBoards().stream().allMatch(Board::isLocked);
         if (allLocked) {
             game.setStatus(GameStatus.RUNNING);
+
+            // FIRST TURN: only set once
+            if (game.getCurrentTurnPlayerId() == null) {
+                List<Player> players = game.getPlayers();
+                if (players.size() != 2) {
+                    throw new IllegalStateException("Cannot start game without exactly 2 players");
+                }
+
+                int idx = ThreadLocalRandom.current().nextInt(players.size());
+                game.setCurrentTurnPlayerId(players.get(idx).getId());
+            }
         }
 
-        // erst speichern, dann Event senden (Event enthält finalen Status)
         Game saved = gameRepository.save(game);
 
-        // --- WebSocket Event bauen & senden ---
-        if (messagingTemplate != null) { // in Unit-Tests kann das null sein
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+
             Player player = saved.getPlayers().stream()
                     .filter(p -> Objects.equals(p.getId(), playerId))
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("Player not found in this game"));
 
-            GameEventDto event = GameEventDto.boardConfirmed(saved, player);
+            // BOARD_CONFIRMED event
+            messagingTemplate.convertAndSend(destination, GameEventDto.boardConfirmed(saved, player));
 
-            String destination = "/topic/games/" + gameCode + "/events";
-            messagingTemplate.convertAndSend(destination, event);
+            // GAME_STARTED event when both boards are locked
+            if (allLocked) {
+                Player firstTurn = saved.getPlayers().stream()
+                        .filter(p -> Objects.equals(p.getId(), saved.getCurrentTurnPlayerId()))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
+
+                messagingTemplate.convertAndSend(destination, GameEventDto.gameStarted(saved, firstTurn));
+            }
         }
-        return gameRepository.save(game);
+
+        return saved;
     }
+
 
 
     public String getBoardAscii(String gameCode, UUID boardId, boolean showShips) {

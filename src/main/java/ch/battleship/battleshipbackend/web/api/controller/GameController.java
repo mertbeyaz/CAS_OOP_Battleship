@@ -1,6 +1,5 @@
 package ch.battleship.battleshipbackend.web.api.controller;
 
-import ch.battleship.battleshipbackend.domain.Shot;
 import ch.battleship.battleshipbackend.service.GameService;
 
 import ch.battleship.battleshipbackend.domain.Game;
@@ -56,54 +55,26 @@ public class GameController {
 
     @Operation(summary = "Fire a shot to a specific board")
     @PostMapping("/{gameCode}/boards/{boardId}/shots")
-    public ResponseEntity<ShotDto> fireShot(@PathVariable String gameCode,
+    public ResponseEntity<GameDto> fireShot(@PathVariable String gameCode,
                                             @PathVariable UUID boardId,
                                             @RequestBody ShotRequest request) {
         try {
-            Shot shot = gameService.fireShot(
+            gameService.fireShot(
                     gameCode,
                     request.shooterId(),
                     boardId,
                     request.x(),
                     request.y()
             );
-            return ResponseEntity.ok(ShotDto.from(shot));
+
+            // Nach dem Schuss den aktuellen Game-State zurückgeben
+            return gameService.getByGameCode(gameCode)
+                    .map(g -> ResponseEntity.ok(GameDto.from(g)))
+                    .orElseGet(() -> ResponseEntity.notFound().build());
+
         } catch (EntityNotFoundException e) {
             return ResponseEntity.notFound().build();
         } catch (IllegalArgumentException | IllegalStateException e) {
-            return ResponseEntity.badRequest().build();
-        }
-    }
-
-    @Operation(summary = "Get a specific board state ")
-    @GetMapping("/{gameCode}/boards/{boardId}/state")
-    public ResponseEntity<BoardStateDto> getBoardState(@PathVariable String gameCode,
-                                                       @PathVariable UUID boardId) {
-        try {
-            BoardStateDto state = gameService.getBoardState(gameCode, boardId);
-            return ResponseEntity.ok(state);
-        } catch (EntityNotFoundException e) {
-            return ResponseEntity.notFound().build();
-        } catch (IllegalStateException e) {
-            return ResponseEntity.badRequest().build();
-        }
-    }
-
-    @Operation(summary = "Get ASCII view of a board")
-    @GetMapping(
-            value = "/{gameCode}/boards/{boardId}/ascii",
-            produces = MediaType.TEXT_PLAIN_VALUE
-    )
-    public ResponseEntity<String> getBoardAscii(@PathVariable String gameCode,
-                                                @PathVariable UUID boardId,
-                                                @RequestParam(name = "showShips", defaultValue = "true")
-                                                boolean showShips) {
-        try {
-            String ascii = gameService.getBoardAscii(gameCode, boardId, showShips);
-            return ResponseEntity.ok(ascii);
-        } catch (EntityNotFoundException e) {
-            return ResponseEntity.notFound().build();
-        } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().build();
         }
     }

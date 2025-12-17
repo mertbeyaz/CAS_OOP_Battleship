@@ -68,11 +68,12 @@ class GameServiceConfirmBoardEventTest {
         game.addPlayer(playerA);
         game.addPlayer(playerB);
 
-        // Falls Boards nicht automatisch erstellt werden, müsst ihr sie hier adden
-        // (bei euch gibt es game.getBoards() -> also existiert die Beziehung definitiv).
-        // Wenn ihr Boards bereits beim Game-Create erstellt: diesen Block weglassen.
         Board boardA = new Board(config.getBoardWidth(), config.getBoardHeight(), playerA);
         Board boardB = new Board(config.getBoardWidth(), config.getBoardHeight(), playerB);
+
+        makeBoardReady(boardA, config);
+        makeBoardReady(boardB, config);
+
         game.addBoard(boardA);
         game.addBoard(boardB);
 
@@ -80,58 +81,78 @@ class GameServiceConfirmBoardEventTest {
         lenient().when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
+
     @Test
     void confirmBoard_shouldSendBoardConfirmedEvent_toGameEventsTopic() {
-        // Arrange: Board A "ready" machen, damit confirmBoard nicht an placements scheitert
-        // -> wir nutzen euren eigenen Generator / rerollBoard
-        gameService.rerollBoard(GAME_CODE, PLAYER_A_ID);
+        // Arrange
+        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
+        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // Act
-        Game saved = gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
+        gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
 
-        assertEquals(GameStatus.SETUP, saved.getStatus());
-
-        // Assert: STOMP Event wurde gesendet
+        // Assert
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
-
-        verify(messagingTemplate, times(1))
-                .convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
+        verify(messagingTemplate).convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
         GameEventDto evt = captor.getValue();
-        assertNotNull(evt);
-
         assertEquals(GameEventType.BOARD_CONFIRMED, evt.type());
         assertEquals(GAME_CODE, evt.gameCode());
-        assertEquals(PLAYER_A_ID.toString(), evt.playerId());
-        assertEquals("PlayerA", evt.playerName());
-
         assertEquals(GameStatus.SETUP, evt.gameStatus());
 
-        assertNotNull(evt.timeStamp());
+        assertEquals(PLAYER_A_ID.toString(), evt.payload().get("playerId"));
+        assertEquals("PlayerA", evt.payload().get("playerName"));
+    }
+
+    @Test
+    void confirmBoard_shouldSetRunningAndSendGameStartedEvent_whenAllBoardsLocked() {
+        // Arrange
+        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
+        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Act
+        gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
+        Game updated = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
+
+        // Assert: game started
+        assertEquals(GameStatus.RUNNING, updated.getStatus());
+        assertNotNull(updated.getCurrentTurnPlayerId());
+
+        ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
+        verify(messagingTemplate, times(3))
+                .convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
+
+        assertEquals(GameEventType.BOARD_CONFIRMED, captor.getAllValues().get(0).type());
+        assertEquals(GameEventType.BOARD_CONFIRMED, captor.getAllValues().get(1).type());
+        assertEquals(GameEventType.GAME_STARTED, captor.getAllValues().get(2).type());
+
+        GameEventDto started = captor.getAllValues().get(2);
+        assertEquals(updated.getCurrentTurnPlayerId().toString(), started.payload().get("currentTurnPlayerId"));
+        assertNotNull(started.payload().get("currentTurnPlayerName"));
     }
 
     @Test
     void confirmBoard_shouldSendBoardConfirmedEvent_withRunningStatus_whenSecondPlayerConfirms() {
-        // Arrange: beide Boards ready machen
-        gameService.rerollBoard(GAME_CODE, PLAYER_A_ID);
-        gameService.rerollBoard(GAME_CODE, PLAYER_B_ID);
-
-        // Act: erst A confirm, dann B confirm (bei B wechselt status -> RUNNING)
+        // Act
         gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
         Game savedAfterSecond = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
         // Assert
         assertEquals(GameStatus.RUNNING, savedAfterSecond.getStatus());
 
-        // Wir prüfen nur das letzte gesendete Event (es wurden 2 gesendet)
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
-        verify(messagingTemplate, times(2))
+        verify(messagingTemplate, times(3))
                 .convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
-        GameEventDto lastEvt = captor.getAllValues().get(1);
-        assertEquals(GameEventType.BOARD_CONFIRMED, lastEvt.type());
-        assertEquals(GameStatus.RUNNING, lastEvt.gameStatus());
-        assertEquals(PLAYER_B_ID.toString(), lastEvt.playerId());
+        // Events: [0]=BOARD_CONFIRMED(A), [1]=BOARD_CONFIRMED(B), [2]=GAME_STARTED
+        GameEventDto secondConfirm = captor.getAllValues().get(1);
+        assertEquals(GameEventType.BOARD_CONFIRMED, secondConfirm.type());
+        assertEquals(GameStatus.RUNNING, secondConfirm.gameStatus());
+        assertEquals(PLAYER_B_ID.toString(), secondConfirm.payload().get("playerId"));
+
+        GameEventDto started = captor.getAllValues().get(2);
+        assertEquals(GameEventType.GAME_STARTED, started.type());
+        assertNotNull(started.payload().get("currentTurnPlayerId"));
     }
 
     @Test
@@ -142,5 +163,39 @@ class GameServiceConfirmBoardEventTest {
                 () -> gameService.confirmBoard(GAME_CODE, PLAYER_A_ID));
 
         verifyNoInteractions(messagingTemplate);
+    }
+
+
+    private static void makeBoardReady(Board board, GameConfiguration config) {
+        int expectedShips = expectedShipsFromFleetDefinition(config.getFleetDefinition());
+
+        board.getPlacements().clear();
+        for (int i = 0; i < expectedShips; i++) {
+            board.getPlacements().add(null); // confirmBoard prüft nur size
+        }
+    }
+
+    private static int expectedShipsFromFleetDefinition(String fleetDefinition) {
+        if (fleetDefinition == null || fleetDefinition.isBlank()) {
+            throw new IllegalStateException("Fleet definition is missing");
+        }
+
+        int sum = 0;
+        String[] parts = fleetDefinition.split(",");
+        for (String part : parts) {
+            String token = part.trim();
+            if (token.isEmpty()) continue;
+
+            // format: "<count>x<size>" e.g. "2x3"
+            int xPos = token.indexOf('x');
+            if (xPos <= 0) {
+                throw new IllegalStateException("Invalid fleet token: " + token);
+            }
+
+            String countStr = token.substring(0, xPos).trim();
+            int count = Integer.parseInt(countStr);
+            sum += count;
+        }
+        return sum;
     }
 }

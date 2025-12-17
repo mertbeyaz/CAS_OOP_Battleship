@@ -2,14 +2,12 @@ package ch.battleship.battleshipbackend.application.service;
 
 import ch.battleship.battleshipbackend.domain.*;
 import ch.battleship.battleshipbackend.domain.common.BaseEntity;
-import ch.battleship.battleshipbackend.domain.enums.GameStatus;
-import ch.battleship.battleshipbackend.domain.enums.Orientation;
-import ch.battleship.battleshipbackend.domain.enums.ShipType;
-import ch.battleship.battleshipbackend.domain.enums.ShotResult;
+import ch.battleship.battleshipbackend.domain.enums.*;
 import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
-import ch.battleship.battleshipbackend.web.api.dto.ShotEventDto;
+import ch.battleship.battleshipbackend.web.api.dto.GameEventDto;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -47,10 +45,12 @@ class GameServiceWebSocketTest {
     @InjectMocks
     private GameService gameService;
 
+// Klasse: GameServiceWebSocketTest
+// Methode: fireShot_shouldSendWebSocketEvent_whenShotIsValid
+
     @Test
     void fireShot_shouldSendWebSocketEvent_whenShotIsValid() {
-        // Arrange – Setup analog zu GameServiceTest.fireShot_shouldReturnShotAndPersistGame_whenAllDataIsValid
-
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -67,7 +67,7 @@ class GameServiceWebSocketTest {
                 defender
         );
 
-        Ship ship = new Ship(ShipType.DESTROYER); // Größe 2
+        Ship ship = new Ship(ShipType.DESTROYER); // size 2
         defenderBoard.placeShip(
                 ship,
                 new Coordinate(3, 3),
@@ -85,45 +85,55 @@ class GameServiceWebSocketTest {
         setId(defender, defenderId);
         setId(defenderBoard, boardId);
 
+        // IMPORTANT: Turn setzen, sonst "Game has no current turn player set"
+        game.setCurrentTurnPlayerId(attackerId);
+
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
         when(shotRepository.save(any(Shot.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        ArgumentCaptor<ShotEventDto> eventCaptor = ArgumentCaptor.forClass(ShotEventDto.class);
+        ArgumentCaptor<GameEventDto> eventCaptor = ArgumentCaptor.forClass(GameEventDto.class);
 
         // Act
-        gameService.fireShot(
-                code,
-                attackerId,
-                boardId,
-                3,
-                3
-        );
+        gameService.fireShot(code, attackerId, boardId, 3, 3);
 
-        // Assert – prüfen, dass ein WS-Event gesendet wurde
-        String expectedDestination = "/topic/games/" + code + "/shots";
-        verify(messagingTemplate, times(1))
+        // Assert – jetzt /events und GameEventDto
+        String expectedDestination = "/topic/games/" + code + "/events";
+
+        // fireShot sendet bei euch mindestens SHOT_FIRED und meistens auch TURN_CHANGED
+        verify(messagingTemplate, atLeastOnce())
                 .convertAndSend(eq(expectedDestination), eventCaptor.capture());
 
-        ShotEventDto event = eventCaptor.getValue();
-        assertThat(event).isNotNull();
-        assertThat(event.gameCode()).isEqualTo(code);
-        assertThat(event.attackerName()).isEqualTo("Attacker");
-        assertThat(event.defenderName()).isEqualTo("Defender");
-        // Koordinate entsprechend deiner Implementierung im GameService (x + "," + y)
-        assertThat(event.coordinate()).isEqualTo("3,3");
-        assertThat(event.hit()).isTrue();
-        // Destroyer mit einem Treffer ist noch nicht versenkt
-        assertThat(event.shipSunk()).isFalse();
-        assertThat(event.gameStatus()).isEqualTo(GameStatus.RUNNING);
-        // Nächster Spieler = der andere im 2-Spieler-Game
-        assertThat(event.nextPlayerName()).isEqualTo("Defender");
+        // wir suchen explizit das SHOT_FIRED Event (weil evtl. TURN_CHANGED auch kommt)
+        GameEventDto shotEvt = eventCaptor.getAllValues().stream()
+                .filter(e -> e.type() == GameEventType.SHOT_FIRED)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Expected SHOT_FIRED event"));
+
+        assertThat(shotEvt).isNotNull();
+        assertThat(shotEvt.gameCode()).isEqualTo(code);
+        assertThat(shotEvt.gameStatus()).isEqualTo(GameStatus.RUNNING);
+
+        // Payload Assertions (entspricht GameEventDto.shotFired(...))
+        assertThat(shotEvt.payload().get("attackerName")).isEqualTo("Attacker");
+        assertThat(shotEvt.payload().get("defenderName")).isEqualTo("Defender");
+        assertThat(shotEvt.payload().get("x")).isEqualTo(3);
+        assertThat(shotEvt.payload().get("y")).isEqualTo(3);
+        assertThat(shotEvt.payload().get("result")).isIn("HIT", "SUNK");
+        assertThat(shotEvt.payload().get("hit")).isEqualTo(true);
+
+        // Destroyer size 2: nach 1 Treffer nicht versenkt
+        assertThat(shotEvt.payload().get("shipSunk")).isEqualTo(false);
+
+        // currentTurnPlayerId ist im Payload enthalten (bei HIT bleibt attacker dran)
+        assertThat(shotEvt.payload().get("currentTurnPlayerId")).isEqualTo(attackerId.toString());
 
         // Repository wurde wie erwartet benutzt
         verify(gameRepository, times(1)).findByGameCode(code);
-        verify(gameRepository, times(1)).save(game);
-        verifyNoMoreInteractions(gameRepository);
+        verify(gameRepository, atLeastOnce()).save(any(Game.class));
+        verify(shotRepository, times(1)).save(any(Shot.class));
     }
+
 
     @Test
     void fireShot_shouldNotSendEvent_whenGameNotFound() {

@@ -298,6 +298,8 @@ class GameServiceTest {
 
         setId(attacker, attackerId);
         setId(defender, defenderId);
+
+        game.setCurrentTurnPlayerId(attacker.getId());
         setId(defenderBoard, boardId);
 
         // --- Stubbing ---
@@ -361,62 +363,78 @@ class GameServiceTest {
 
     @Test
     void fireShot_shouldThrowIllegalState_whenShooterIsNotPartOfGame() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
         game.setStatus(GameStatus.RUNNING);
 
-        Player somePlayer = new Player("SomePlayer");
-        game.addPlayer(somePlayer);
+        Player defender = new Player("Defender");
+        setId(defender, UUID.randomUUID());
+        game.addPlayer(defender);
 
-        Board board = new Board(
-                game.getConfig().getBoardWidth(),
-                game.getConfig().getBoardHeight(),
-                somePlayer
-        );
-        game.addBoard(board);
+        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
+        setId(defenderBoard, UUID.randomUUID());
+        game.addBoard(defenderBoard);
 
-        UUID unknownShooterId = UUID.randomUUID();
+        // Shooter ist NICHT Teil des Games
+        UUID shooterId = UUID.randomUUID();
+
+        // IMPORTANT: damit wir nicht bei "no current turn" hängen bleiben
+        // setzen wir den Turn explizit auf diesen Shooter (auch wenn er nicht im Game ist)
+        game.setCurrentTurnPlayerId(shooterId);
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
-        assertThatThrownBy(() ->
-                gameService.fireShot(code, unknownShooterId, board.getId(), 0, 0)
-        ).isInstanceOf(IllegalStateException.class)
+        // Act + Assert
+        assertThatThrownBy(() -> gameService.fireShot(code, shooterId, defenderBoard.getId(), 1, 1))
+                .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Shooter does not belong");
 
-        verify(gameRepository, never()).save(any());
+        verifyNoInteractions(shotRepository);
     }
+
 
     @Test
     void fireShot_shouldThrowIllegalState_whenShootingOwnBoard() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
         game.setStatus(GameStatus.RUNNING);
 
         Player attacker = new Player("Attacker");
-        game.addPlayer(attacker);
+        Player defender = new Player("Defender");
+        setId(attacker, UUID.randomUUID());
+        setId(defender, UUID.randomUUID());
 
-        Board ownBoard = new Board(
-                game.getConfig().getBoardWidth(),
-                game.getConfig().getBoardHeight(),
-                attacker
-        );
-        game.addBoard(ownBoard);
+        game.addPlayer(attacker);
+        game.addPlayer(defender);
+
+        Board attackerBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), attacker);
+        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
+        setId(attackerBoard, UUID.randomUUID());
+        setId(defenderBoard, UUID.randomUUID());
+        game.addBoard(attackerBoard);
+        game.addBoard(defenderBoard);
+
+        // IMPORTANT: Turn setzen, sonst knallt es vorher
+        game.setCurrentTurnPlayerId(attacker.getId());
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
-        assertThatThrownBy(() ->
-                gameService.fireShot(code, attacker.getId(), ownBoard.getId(), 0, 0)
-        ).isInstanceOf(IllegalStateException.class)
+        // Act + Assert
+        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), attackerBoard.getId(), 1, 1))
+                .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("cannot shoot at own board");
 
-        verify(gameRepository, never()).save(any());
+        verifyNoInteractions(shotRepository);
     }
+
 
     @Test
     void fireShot_shouldThrowIllegalArgument_whenCoordinateOutOfBounds() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -427,36 +445,26 @@ class GameServiceTest {
         game.addPlayer(attacker);
         game.addPlayer(defender);
 
-        Board defenderBoard = new Board(
-                game.getConfig().getBoardWidth(),
-                game.getConfig().getBoardHeight(),
-                defender
-        );
+        setId(attacker, UUID.randomUUID());
+        setId(defender, UUID.randomUUID());
+
+        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
+        setId(defenderBoard, UUID.randomUUID());
         game.addBoard(defenderBoard);
 
-        // >>> IDs simulieren (persistierter Zustand)
-        UUID attackerId = UUID.randomUUID();
-        UUID defenderId = UUID.randomUUID();
-        UUID boardId = UUID.randomUUID();
-
-        setId(attacker, attackerId);
-        setId(defender, defenderId);
-        setId(defenderBoard, boardId);
+        // IMPORTANT: damit Turn-Prüfung nicht vorher knallt
+        game.setCurrentTurnPlayerId(attacker.getId());
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
-        int xOutOfBounds = defenderBoard.getWidth();   // gültig: 0..width-1
-        int yOutOfBounds = defenderBoard.getHeight();  // gültig: 0..height-1
-
         // Act + Assert
-        assertThatThrownBy(() ->
-                gameService.fireShot(code, attackerId, boardId, xOutOfBounds, yOutOfBounds)
-        )
+        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), defenderBoard.getId(), 999, 999))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("out of board bounds");
 
-        verify(gameRepository, never()).save(any());
+        verifyNoInteractions(shotRepository);
     }
+
 
     @Test
     void getBoardState_shouldReturnBoardWithShipsAndShots() {
@@ -518,17 +526,17 @@ class GameServiceTest {
 
         // Shots auf dieses Board
         assertThat(state.shotsOnThisBoard()).hasSize(2);
-        assertThat(state.shotsOnThisBoard())
-                .anySatisfy(s -> {
-                    assertThat(s.x()).isEqualTo(3);
-                    assertThat(s.y()).isEqualTo(3);
-                    assertThat(s.result()).isEqualTo(ShotResult.HIT);
-                })
-                .anySatisfy(s -> {
-                    assertThat(s.x()).isEqualTo(0);
-                    assertThat(s.y()).isEqualTo(0);
-                    assertThat(s.result()).isEqualTo(ShotResult.MISS);
-                });
+        assertThat(state.shotsOnThisBoard()).anyMatch(s ->
+                Integer.valueOf(3).equals(s.get("x")) &&
+                        Integer.valueOf(3).equals(s.get("y")) &&
+                        "HIT".equals(s.get("result"))
+        );
+
+        assertThat(state.shotsOnThisBoard()).anyMatch(s ->
+                Integer.valueOf(0).equals(s.get("x")) &&
+                        Integer.valueOf(0).equals(s.get("y")) &&
+                        "MISS".equals(s.get("result"))
+        );
 
         // Kein save(), da getBoardState nur liest
         verify(gameRepository, times(1)).findByGameCode(code);
