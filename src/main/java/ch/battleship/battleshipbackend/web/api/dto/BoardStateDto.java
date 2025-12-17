@@ -1,6 +1,7 @@
 package ch.battleship.battleshipbackend.web.api.dto;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public record BoardStateDto(
@@ -11,5 +12,5 @@ public record BoardStateDto(
         String ownerUsername,
         boolean locked,
         List<ShipPlacementDto> ships,
-        List<ShotDto> shotsOnThisBoard
+        List<Map<String, Object>> shotsOnThisBoard
 ) { }

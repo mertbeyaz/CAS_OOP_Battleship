@@ -46,6 +46,12 @@ public class Game extends BaseEntity {
     @JoinColumn(name = "game_id")
     private List<ChatMessage> messages = new ArrayList<>();
 
+    @Column(name = "current_turn_player_id")
+    private UUID currentTurnPlayerId;
+
+    @Column(name = "winner_player_id")
+    private UUID winnerPlayerId;
+
     public Game(GameConfiguration config) {
         this.status = GameStatus.WAITING;
         this.gameCode = UUID.randomUUID().toString();

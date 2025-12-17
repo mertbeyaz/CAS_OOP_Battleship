@@ -32,6 +32,8 @@ public record GameDto(
         String status,
         int boardWidth,
         int boardHeight,
+        UUID currentTurnPlayerId,
+        UUID winnerPlayerId,
         List<PlayerDto> players,
         List<BoardDto> boards
 ) {
@@ -43,12 +45,10 @@ public record GameDto(
                 game.getStatus().name(),
                 config.getBoardWidth(),
                 config.getBoardHeight(),
-                game.getPlayers().stream()
-                        .map(PlayerDto::from)
-                        .toList(),
-                game.getBoards().stream()
-                        .map(BoardDto::from)
-                        .toList()
+                game.getCurrentTurnPlayerId(),
+                game.getWinnerPlayerId(),
+                game.getPlayers().stream().map(PlayerDto::from).toList(),
+                game.getBoards().stream().map(BoardDto::from).toList()
         );
     }
 }
