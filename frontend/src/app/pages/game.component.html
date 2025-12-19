@@ -1,0 +1,81 @@
+<ng-container *ngIf="loading; else loaded">
+  <p>Lade Spiel...</p>
+</ng-container>
+
+<ng-template #loaded>
+  <p *ngIf="error" class="error">{{ error }}</p>
+  <p *ngIf="!game && !error">Kein Spiel geladen.</p>
+
+  <main class="game" *ngIf="game">
+    <header class="bar">
+      <div>
+        <div class="label">Game Code</div>
+        <div class="value">{{ game.gameCode }}</div>
+      </div>
+      <div>
+        <div class="label">Status</div>
+        <div class="value">{{ game.status }}</div>
+      </div>
+      <div *ngIf="game.status === 'RUNNING' && game.currentTurnPlayerId" class="turn">
+        Am Zug: {{ playerName(game.currentTurnPlayerId) }}
+      </div>
+      <div *ngIf="game.status === 'FINISHED' && game.winnerPlayerId" class="turn">
+        Gewinner: {{ playerName(game.winnerPlayerId) }}
+      </div>
+    </header>
+
+    <section class="players">
+      <h2>Spieler</h2>
+      <div *ngFor="let p of game.players" class="player-row">
+        <div>
+          <strong>{{ p.username }}</strong>
+          <span *ngIf="p.id === myPlayerId" class="tag">Du</span>
+        </div>
+        <div class="ready">
+          <button
+            *ngIf="p.id === myPlayerId"
+            (click)="markReady()"
+            [disabled]="!isSetup() || readyLoading || readyDone"
+          >
+            {{ readyDone ? 'Ready' : 'Ready werden' }}
+          </button>
+          <span *ngIf="p.id !== myPlayerId">
+            {{ game.status === 'RUNNING' ? 'Ready' : 'Wartet...' }}
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <section class="boards">
+      <div class="board" *ngIf="myBoard">
+        <h3>Dein Board</h3>
+        <div class="grid" [style.--w]="myBoard.width" [style.--h]="myBoard.height">
+          <span
+            class="cell"
+            *ngFor="let _ of cells(myBoard.width * myBoard.height); let i = index"
+            [ngClass]="cellStateForMine(i % myBoard.width, Math.floor(i / myBoard.width))"
+          >
+            {{ cellLabel(i, myBoard.width) }}
+          </span>
+        </div>
+      </div>
+
+      <div class="board" *ngIf="opponentBoard">
+        <h3>Gegner-Board</h3>
+        <div class="grid" [style.--w]="opponentBoard.width" [style.--h]="opponentBoard.height">
+          <span
+            class="cell"
+            *ngFor="let _ of cells(opponentBoard.width * opponentBoard.height); let i = index"
+            [ngClass]="cellStateForOpp(i % opponentBoard.width, Math.floor(i / opponentBoard.width))"
+            [class.clickable]="canShoot()"
+            [class.disabled]="!canShoot()"
+            (click)="canShoot() && fireShot(i % opponentBoard.width, Math.floor(i / opponentBoard.width))"
+          >
+            {{ cellLabel(i, opponentBoard.width) }}
+          </span>
+        </div>
+        <div *ngIf="shotError" class="error">{{ shotError }}</div>
+      </div>
+    </section>
+  </main>
+</ng-template>

@@ -17,70 +17,14 @@ type LobbyResponse = {
 type GameDto = {
   gameCode: string;
   players: Array<{ id: string; username: string }>;
-  boards: Array<{ id: string; owner: { id: string; username: string } | null }>;
+  boards: Array<{ id: string; width: number; height: number; ownerId: string; ownerUsername: string }>;
 };
 
 @Component({
   standalone: true,
   selector: 'app-landing',
   imports: [FormsModule, NgIf],
-  template: `
-    <main class="landing">
-      <h1>Battleship</h1>
-
-      <section>
-        <h2>Schnelles Spiel</h2>
-        <form (ngSubmit)="quickPlay()" #fQuick="ngForm">
-          <label>
-            Username
-            <input
-              name="usernameQuick"
-              [(ngModel)]="usernameQuick"
-              required
-              minlength="2"
-              autocomplete="off"
-              [disabled]="loadingQuick"
-            />
-          </label>
-          <button type="submit" [disabled]="loadingQuick || !fQuick.valid">
-            {{ loadingQuick ? 'Verbinde...' : 'Schnelles Spiel starten' }}
-          </button>
-        </form>
-        <p *ngIf="errorQuick" class="error">{{ errorQuick }}</p>
-      </section>
-
-      <section>
-        <h2>Spiel beitreten</h2>
-        <form (ngSubmit)="joinByCode()" #fJoin="ngForm">
-          <label>
-            Game Code
-            <input
-              name="gameCode"
-              [(ngModel)]="gameCode"
-              required
-              autocomplete="off"
-              [disabled]="loadingJoin"
-            />
-          </label>
-          <label>
-            Username
-            <input
-              name="usernameJoin"
-              [(ngModel)]="usernameJoin"
-              required
-              minlength="2"
-              autocomplete="off"
-              [disabled]="loadingJoin"
-            />
-          </label>
-          <button type="submit" [disabled]="loadingJoin || !fJoin.valid">
-            {{ loadingJoin ? 'Tritt bei...' : 'Beitreten' }}
-          </button>
-        </form>
-        <p *ngIf="errorJoin" class="error">{{ errorJoin }}</p>
-      </section>
-    </main>
-  `,
+  templateUrl: './landing.component.html',
 })
 export class LandingComponent {
   private http = inject(HttpClient);
@@ -138,14 +82,13 @@ export class LandingComponent {
       .post<GameDto>(`${API_BASE_URL}/games/${code}/join`, { username: name })
       .subscribe({
         next: (res) => {
-          // Player und Board finden
           const me = res.players.find((p) => p.username === name);
           if (!me) {
             this.loadingJoin = false;
             this.errorJoin = 'Player nicht gefunden.';
             return;
           }
-          const myBoard = res.boards.find((b) => b.owner && b.owner.id === me.id);
+          const myBoard = res.boards.find((b) => b.ownerId === me.id);
           if (!myBoard) {
             this.loadingJoin = false;
             this.errorJoin = 'Board nicht gefunden.';

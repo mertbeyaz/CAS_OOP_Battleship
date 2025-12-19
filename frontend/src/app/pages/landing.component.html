@@ -1,0 +1,55 @@
+<main class="landing">
+  <h1>Battleship</h1>
+
+  <section>
+    <h2>Schnelles Spiel</h2>
+    <form (ngSubmit)="quickPlay()" #fQuick="ngForm">
+      <label>
+        Username
+        <input
+          name="usernameQuick"
+          [(ngModel)]="usernameQuick"
+          required
+          minlength="2"
+          autocomplete="off"
+          [disabled]="loadingQuick"
+        />
+      </label>
+      <button type="submit" [disabled]="loadingQuick || !fQuick.valid">
+        {{ loadingQuick ? 'Verbinde...' : 'Schnelles Spiel starten' }}
+      </button>
+    </form>
+    <p *ngIf="errorQuick" class="error">{{ errorQuick }}</p>
+  </section>
+
+  <section>
+    <h2>Spiel beitreten</h2>
+    <form (ngSubmit)="joinByCode()" #fJoin="ngForm">
+      <label>
+        Game Code
+        <input
+          name="gameCode"
+          [(ngModel)]="gameCode"
+          required
+          autocomplete="off"
+          [disabled]="loadingJoin"
+        />
+      </label>
+      <label>
+        Username
+        <input
+          name="usernameJoin"
+          [(ngModel)]="usernameJoin"
+          required
+          minlength="2"
+          autocomplete="off"
+          [disabled]="loadingJoin"
+        />
+      </label>
+      <button type="submit" [disabled]="loadingJoin || !fJoin.valid">
+        {{ loadingJoin ? 'Tritt bei...' : 'Beitreten' }}
+      </button>
+    </form>
+    <p *ngIf="errorJoin" class="error">{{ errorJoin }}</p>
+  </section>
+</main>
