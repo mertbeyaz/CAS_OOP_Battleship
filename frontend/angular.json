@@ -25,6 +25,9 @@
       "root": "",
       "sourceRoot": "src",
       "prefix": "app",
+      "polyfills": [
+        "src/polyfills.ts"
+      ],
       "architect": {
         "build": {
           "builder": "@angular/build:application",

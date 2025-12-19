@@ -85,6 +85,23 @@
           <p *ngIf="shotError" class="error">{{ shotError }}</p>
         </div>
       </section>
+
+      <!-- nur der Chat-Abschnitt, Rest deines Templates bleibt -->
+      <section class="panel chat">
+        <div class="panel-head"><h3>Chat</h3></div>
+        <div class="messages">
+          <div *ngFor="let m of chatMessages" [class.me]="m.senderId === myPlayerId">
+            <strong>{{ m.senderName || playerName(m.senderId) || m.senderId }}:</strong>
+            <span>{{ m.message }}</span>
+          </div>
+        </div>
+        <form (ngSubmit)="sendChat()" class="chat-form">
+          <input [(ngModel)]="chatInput" name="chatInput" autocomplete="off" placeholder="Nachricht..." />
+          <button type="submit" [disabled]="!chatInput.trim()">Senden</button>
+        </form>
+      </section>
+
+
     </div>
   </main>
 </ng-template>
