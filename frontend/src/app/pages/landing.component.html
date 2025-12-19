@@ -1,0 +1,76 @@
+<main class="landing">
+  <div class="bg"></div>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Multiplayer</p>
+        <h1>Battleship</h1>
+        <p class="lede">Starte sofort oder tritt mit Game-Code bei.</p>
+      </div>
+      <div class="badge">v1</div>
+    </header>
+
+    <div class="panels">
+      <section class="card">
+        <div class="card-head">
+          <h2>Schnelles Spiel</h2>
+          <p class="hint">Füllt automatisch eine Lobby.</p>
+        </div>
+        <form (ngSubmit)="quickPlay()" #fQuick="ngForm" class="form">
+          <label>
+            <span>Username</span>
+            <input
+              name="usernameQuick"
+              [(ngModel)]="usernameQuick"
+              required
+              minlength="2"
+              autocomplete="off"
+              [disabled]="loadingQuick"
+              placeholder="z. B. CaptainRay"
+            />
+          </label>
+          <button type="submit" class="primary" [disabled]="loadingQuick || !fQuick.valid">
+            {{ loadingQuick ? 'Verbinde...' : 'Schnelles Spiel starten' }}
+          </button>
+        </form>
+        <p *ngIf="errorQuick" class="error">{{ errorQuick }}</p>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <h2>Spiel beitreten</h2>
+          <p class="hint">Mit Code und Username in ein Game springen.</p>
+        </div>
+        <form (ngSubmit)="joinByCode()" #fJoin="ngForm" class="form two-col">
+          <label>
+            <span>Game Code</span>
+            <input
+              name="gameCode"
+              [(ngModel)]="gameCode"
+              required
+              autocomplete="off"
+              [disabled]="loadingJoin"
+              placeholder="Code einfügen"
+            />
+          </label>
+          <label>
+            <span>Username</span>
+            <input
+              name="usernameJoin"
+              [(ngModel)]="usernameJoin"
+              required
+              minlength="2"
+              autocomplete="off"
+              [disabled]="loadingJoin"
+              placeholder="Dein Username"
+            />
+          </label>
+          <button type="submit" class="primary" [disabled]="loadingJoin || !fJoin.valid">
+            {{ loadingJoin ? 'Tritt bei...' : 'Beitreten' }}
+          </button>
+        </form>
+        <p *ngIf="errorJoin" class="error">{{ errorJoin }}</p>
+      </section>
+    </div>
+  </div>
+</main>
