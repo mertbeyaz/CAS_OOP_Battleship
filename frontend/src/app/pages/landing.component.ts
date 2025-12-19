@@ -25,6 +25,7 @@ type GameDto = {
   selector: 'app-landing',
   imports: [FormsModule, NgIf],
   templateUrl: './landing.component.html',
+  styleUrls: ['./landing.component.scss'],
 })
 export class LandingComponent {
   private http = inject(HttpClient);
