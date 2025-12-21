@@ -70,13 +70,32 @@
 h2, h3 { margin: 0; color: #f3f4f6; }
 
 .players .player-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 140px auto;
   align-items: center;
+  gap: 12px;
   padding: 6px 0;
   border-bottom: 1px solid #111827;
 }
 .players .player-row:last-child { border-bottom: none; }
+
+.player-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.player-status {
+  text-align: center;
+  color: #cbd5e1;
+  font-weight: 600;
+}
+
+.player-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
 
 .tag {
   background: rgba(59, 130, 246, 0.2);
@@ -178,5 +197,16 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   }
   .panel.chat {
     grid-column: auto;
+  }
+  .players .player-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .player-status {
+    text-align: left;
+  }
+  .player-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }

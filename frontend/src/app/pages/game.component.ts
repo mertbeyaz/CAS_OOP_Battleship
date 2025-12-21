@@ -69,7 +69,9 @@ export class GameComponent implements OnInit, OnDestroy {
   myPlayerId = '';
   myBoardId = '';
   game?: GameDto;
+  readyPlayers = new Set<string>();
 
+  autoLoading = false; //autoPlacement
   loading = false;
   readyLoading = false;
   readyDone = false;
@@ -161,21 +163,25 @@ export class GameComponent implements OnInit, OnDestroy {
   }
 
   fetchBoardState(boardId: string, isMine: boolean) {
-    this.http.get<BoardStateDto>(`${API_BASE_URL}/games/${this.gameCode}/boards/${boardId}/state`).subscribe({
-      next: (state) => {
-        if (isMine) {
-          this.myBoardState = state;
-          this.buildMyBoardMaps();
-        } else {
-          this.opponentBoardState = state;
-          this.buildOpponentMaps();
-        }
-        this.cdr.markForCheck();
-      },
-      error: (err) => {
-        if (err.status !== 404) console.error('Board state failed', err);
-      },
-    });
+    this.http.get<BoardStateDto>(`${API_BASE_URL}/games/${this.gameCode}/boards/${boardId}/state`)
+      .subscribe({
+        next: (state) => {
+          if (isMine) {
+            this.myBoardState = state;
+            this.buildMyBoardMaps();
+          } else {
+            this.opponentBoardState = state;
+            this.buildOpponentMaps();
+          }
+
+          if (state.locked) {
+            this.readyPlayers.add(state.ownerId);
+          } else {
+            this.readyPlayers.delete(state.ownerId);
+          }
+          this.cdr.markForCheck();
+        },
+      });
   }
 
   buildMyBoardMaps() {
@@ -326,12 +332,42 @@ export class GameComponent implements OnInit, OnDestroy {
     });
   }
 
-  handleEvent(_msg: IMessage) {
+  handleEvent(msg: IMessage) {
+    const evt = JSON.parse(msg.body) as GameEventDto;
+
     this.zone.run(() => {
-      // Optional: this.loadGame();
-      this.cdr.markForCheck();
+      if (evt.type === 'BOARD_CONFIRMED') {
+        this.loadBoardStates();
+        this.cdr.markForCheck();
+        return;
+      }
+
+      if (evt.type === 'GAME_STARTED') {
+        this.loadGame();
+        return;
+      }
+
+      if (evt.type === 'SHOT_FIRED') {
+        const { currentTurnPlayerId } = evt.payload || {};
+        if (this.game && currentTurnPlayerId) {
+          this.game = { ...this.game, currentTurnPlayerId };
+        }
+        this.loadBoardStates();
+        this.cdr.markForCheck();
+        return;
+      }
+
+      if (evt.type === 'TURN_CHANGED') {
+        const { currentTurnPlayerId } = evt.payload || {};
+        if (this.game && currentTurnPlayerId) {
+          this.game = { ...this.game, currentTurnPlayerId };
+          this.cdr.markForCheck();
+        }
+        return;
+      }
     });
   }
+
 
   loadChatHistory() {
     this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
@@ -355,6 +391,29 @@ export class GameComponent implements OnInit, OnDestroy {
       }),
     });
     this.chatInput = '';
+  }
+
+  autoPlacement() {
+    if (!this.isSetup() || this.readyDone || !this.myPlayerId) return;
+    this.autoLoading = true;
+
+    this.http
+      .post<BoardStateDto>(
+        `${API_BASE_URL}/games/${this.gameCode}/players/${this.myPlayerId}/board/reroll`,
+        {}
+      )
+      .subscribe({
+        next: (state) => {
+          this.myBoardState = state;
+          this.buildMyBoardMaps();
+          this.autoLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.autoLoading = false;
+          this.cdr.markForCheck();
+        },
+      });
   }
 
   protected readonly Math = Math;
