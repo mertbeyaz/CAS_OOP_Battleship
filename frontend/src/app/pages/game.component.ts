@@ -1,4 +1,14 @@
-import { ChangeDetectorRef, Component, NgZone, OnDestroy, OnInit, inject } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  ElementRef,
+  NgZone,
+  OnDestroy,
+  OnInit,
+  ViewChild,
+  inject,
+} from '@angular/core';
 import { NgIf, NgFor, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
@@ -31,6 +41,11 @@ type BoardStateDto = {
   shotsOnThisBoard: Array<{ x: number; y: number; result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT' }>;
 };
 
+type GameEventDto = {
+  type: string;
+  payload: Record<string, any>;
+};
+
 type ChatDto = { senderId: string; senderName: string; gameCode: string; message: string; timestamp: string };
 type CellState = 'empty' | 'ship' | 'miss' | 'hit' | 'sunk';
 
@@ -40,12 +55,15 @@ type CellState = 'empty' | 'ship' | 'miss' | 'hit' | 'sunk';
   imports: [NgIf, NgFor, NgClass, FormsModule],
   templateUrl: './game.component.html',
   styleUrls: ['./game.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class GameComponent implements OnInit, OnDestroy {
   private http = inject(HttpClient);
   private route = inject(ActivatedRoute);
   private cdr = inject(ChangeDetectorRef);
   private zone = inject(NgZone);
+
+  @ViewChild('messagesContainer') private messagesEl?: ElementRef<HTMLDivElement>;
 
   gameCode = '';
   myPlayerId = '';
@@ -68,7 +86,6 @@ export class GameComponent implements OnInit, OnDestroy {
   oppHits = new Map<string, CellState>();
   oppMisses = new Set<string>();
 
-  // WebSocket / Chat
   private stomp?: Client;
   private eventSub?: StompSubscription;
   private chatSub?: StompSubscription;
@@ -102,6 +119,13 @@ export class GameComponent implements OnInit, OnDestroy {
     this.stomp?.deactivate();
   }
 
+  private scrollChatToBottom() {
+    requestAnimationFrame(() => {
+      const el = this.messagesEl?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+  }
+
   loadGame() {
     this.loading = true;
     this.error = '';
@@ -116,7 +140,7 @@ export class GameComponent implements OnInit, OnDestroy {
         }),
         finalize(() => {
           this.loading = false;
-          this.cdr.detectChanges();
+          this.cdr.markForCheck();
         })
       )
       .subscribe({
@@ -126,6 +150,7 @@ export class GameComponent implements OnInit, OnDestroy {
           this.loadBoardStates();
           this.loadChatHistory();
           this.connectWs();
+          this.cdr.markForCheck();
         },
       });
   }
@@ -145,6 +170,7 @@ export class GameComponent implements OnInit, OnDestroy {
           this.opponentBoardState = state;
           this.buildOpponentMaps();
         }
+        this.cdr.markForCheck();
       },
       error: (err) => {
         if (err.status !== 404) console.error('Board state failed', err);
@@ -208,10 +234,12 @@ export class GameComponent implements OnInit, OnDestroy {
           this.game = g;
           this.readyDone = true;
           this.readyLoading = false;
+          this.cdr.markForCheck();
         },
         error: () => {
           this.readyLoading = false;
           this.error = 'Ready fehlgeschlagen.';
+          this.cdr.markForCheck();
         },
       });
   }
@@ -230,11 +258,13 @@ export class GameComponent implements OnInit, OnDestroy {
           this.game = g;
           this.shotLoading = false;
           this.loadBoardStates();
+          this.cdr.markForCheck();
         },
         error: (err) => {
           console.error('Shot failed', err);
           this.shotError = 'Schuss fehlgeschlagen.';
           this.shotLoading = false;
+          this.cdr.markForCheck();
         },
       });
   }
@@ -269,61 +299,48 @@ export class GameComponent implements OnInit, OnDestroy {
     return 'empty';
   }
 
-  // WebSocket + Chat
   connectWs() {
     if (this.stomp || !this.gameCode) return;
+
     this.stomp = new Client({
-      webSocketFactory: () => new SockJS('/ws'), // ggf. an Backend-Pfad anpassen
+      webSocketFactory: () => new SockJS('/ws'),
       reconnectDelay: 5000,
     });
+
     this.stomp.onConnect = () => {
-      this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
-      this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+      this.zone.run(() => {
+        this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
+        this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+      });
     };
+
     this.stomp.activate();
-    this.stomp.onConnect = () => {
-      console.log('WS connected');
-
-      // Game-Events (optional: bei Events z.B. loadGame() aufrufen)
-      this.eventSub = this.stomp!.subscribe(
-        `/topic/games/${this.gameCode}/events`,
-        (msg) => {
-          console.log('event', msg.body);
-          this.handleEvent(msg);
-        }
-      );
-
-      // Chat-Nachrichten empfangen
-      this.chatSub = this.stomp!.subscribe(
-        `/topic/games/${this.gameCode}/chat`,
-        (msg) => {
-          console.log('chat in', msg.body);
-          this.handleChat(msg);
-        }
-      );
-    };
-
-  }
-
-  handleEvent(_msg: IMessage) {
-    // einfache Variante: bei jedem Event neu laden
-    this.loadGame();
   }
 
   handleChat(msg: IMessage) {
-    const dto = JSON.parse(msg.body) as ChatDto; // { senderId, senderName, message, timestamp, ... }
+    const dto = JSON.parse(msg.body) as ChatDto;
     this.zone.run(() => {
       this.chatMessages = [...this.chatMessages, dto];
+      this.cdr.markForCheck();
+      this.scrollChatToBottom();
+    });
+  }
+
+  handleEvent(_msg: IMessage) {
+    this.zone.run(() => {
+      // Optional: this.loadGame();
+      this.cdr.markForCheck();
     });
   }
 
   loadChatHistory() {
-    this.http
-      .get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`)
-      .subscribe({
-        next: (msgs) => (this.chatMessages = msgs),
-        error: (err) => console.error('Chat history failed', err),
-      });
+    this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
+      next: (msgs) => {
+        this.chatMessages = msgs;
+        this.cdr.markForCheck();
+        this.scrollChatToBottom();
+      },
+    });
   }
 
   sendChat() {

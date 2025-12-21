@@ -1,4 +1,4 @@
-// src/polyfills.ts
-// eslint-disable-next-line no-var
+import 'zone.js';
+
 var global: any = globalThis;
 (globalThis as any).global = global;
