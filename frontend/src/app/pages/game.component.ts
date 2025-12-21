@@ -1,9 +1,22 @@
-import { ChangeDetectorRef, Component, OnInit, inject } from '@angular/core';
-import {NgIf, NgFor, NgClass} from '@angular/common';
+import {
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  ElementRef,
+  NgZone,
+  OnDestroy,
+  OnInit,
+  ViewChild,
+  inject,
+} from '@angular/core';
+import { NgIf, NgFor, NgClass } from '@angular/common';
+import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute } from '@angular/router';
-import { API_BASE_URL } from '../app.config';
 import { catchError, finalize, throwError } from 'rxjs';
+import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
+import SockJS from 'sockjs-client';
+import { API_BASE_URL } from '../app.config';
 
 type GameDto = {
   id: string;
@@ -28,25 +41,34 @@ type BoardStateDto = {
   shotsOnThisBoard: Array<{ x: number; y: number; result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT' }>;
 };
 
+type GameEventDto = {
+  type: string;
+  payload: Record<string, any>;
+};
+
+type ChatDto = { senderId: string; senderName: string; gameCode: string; message: string; timestamp: string };
 type CellState = 'empty' | 'ship' | 'miss' | 'hit' | 'sunk';
 
 @Component({
   standalone: true,
   selector: 'app-game',
-  imports: [NgIf, NgFor, NgClass],
+  imports: [NgIf, NgFor, NgClass, FormsModule],
   templateUrl: './game.component.html',
   styleUrls: ['./game.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class GameComponent implements OnInit {
+export class GameComponent implements OnInit, OnDestroy {
   private http = inject(HttpClient);
   private route = inject(ActivatedRoute);
   private cdr = inject(ChangeDetectorRef);
+  private zone = inject(NgZone);
+
+  @ViewChild('messagesContainer') private messagesEl?: ElementRef<HTMLDivElement>;
 
   gameCode = '';
   myPlayerId = '';
   myBoardId = '';
   game?: GameDto;
-  opponentBoardId = '';
 
   loading = false;
   readyLoading = false;
@@ -64,12 +86,18 @@ export class GameComponent implements OnInit {
   oppHits = new Map<string, CellState>();
   oppMisses = new Set<string>();
 
+  private stomp?: Client;
+  private eventSub?: StompSubscription;
+  private chatSub?: StompSubscription;
+
+  chatMessages: ChatDto[] = [];
+  chatInput = '';
+
   get myBoard() {
     return this.game?.boards.find((b) => b.id === this.myBoardId);
   }
-
   get opponentBoard() {
-    return this.game?.boards.find((b) => b.id === this.opponentBoardId);
+    return this.game?.boards.find((b) => b.ownerId !== this.myPlayerId);
   }
 
   ngOnInit(): void {
@@ -82,6 +110,19 @@ export class GameComponent implements OnInit {
       } else {
         this.error = 'Fehlender gameCode.';
       }
+    });
+  }
+
+  ngOnDestroy(): void {
+    this.eventSub?.unsubscribe();
+    this.chatSub?.unsubscribe();
+    this.stomp?.deactivate();
+  }
+
+  private scrollChatToBottom() {
+    requestAnimationFrame(() => {
+      const el = this.messagesEl?.nativeElement;
+      if (el) el.scrollTop = el.scrollHeight;
     });
   }
 
@@ -99,26 +140,24 @@ export class GameComponent implements OnInit {
         }),
         finalize(() => {
           this.loading = false;
-          this.cdr.detectChanges();
+          this.cdr.markForCheck();
         })
       )
       .subscribe({
         next: (g) => {
           this.game = g;
-          this.setOpponentBoard();
           if (g.status === 'RUNNING') this.readyDone = true;
           this.loadBoardStates();
+          this.loadChatHistory();
+          this.connectWs();
+          this.cdr.markForCheck();
         },
       });
   }
 
   loadBoardStates() {
-    if (this.myBoardId) {
-      this.fetchBoardState(this.myBoardId, true);
-    }
-    if (this.opponentBoardId) {
-      this.fetchBoardState(this.opponentBoardId, false);
-    }
+    if (this.myBoardId) this.fetchBoardState(this.myBoardId, true);
+    if (this.opponentBoard?.id) this.fetchBoardState(this.opponentBoard.id, false);
   }
 
   fetchBoardState(boardId: string, isMine: boolean) {
@@ -131,8 +170,11 @@ export class GameComponent implements OnInit {
           this.opponentBoardState = state;
           this.buildOpponentMaps();
         }
+        this.cdr.markForCheck();
       },
-      error: (err) => console.error('Board state failed', err),
+      error: (err) => {
+        if (err.status !== 404) console.error('Board state failed', err);
+      },
     });
   }
 
@@ -151,13 +193,9 @@ export class GameComponent implements OnInit {
     }
     for (const shot of this.myBoardState.shotsOnThisBoard) {
       const key = `${shot.x},${shot.y}`;
-      if (shot.result === 'MISS') {
-        this.myMisses.add(key);
-      } else if (shot.result === 'HIT') {
-        this.myHits.set(key, 'hit');
-      } else if (shot.result === 'SUNK') {
-        this.myHits.set(key, 'sunk');
-      }
+      if (shot.result === 'MISS') this.myMisses.add(key);
+      else if (shot.result === 'HIT') this.myHits.set(key, 'hit');
+      else if (shot.result === 'SUNK') this.myHits.set(key, 'sunk');
     }
   }
 
@@ -167,20 +205,10 @@ export class GameComponent implements OnInit {
     this.oppMisses.clear();
     for (const shot of this.opponentBoardState.shotsOnThisBoard) {
       const key = `${shot.x},${shot.y}`;
-      if (shot.result === 'MISS') {
-        this.oppMisses.add(key);
-      } else if (shot.result === 'HIT') {
-        this.oppHits.set(key, 'hit');
-      } else if (shot.result === 'SUNK') {
-        this.oppHits.set(key, 'sunk');
-      }
+      if (shot.result === 'MISS') this.oppMisses.add(key);
+      else if (shot.result === 'HIT') this.oppHits.set(key, 'hit');
+      else if (shot.result === 'SUNK') this.oppHits.set(key, 'sunk');
     }
-  }
-
-  setOpponentBoard() {
-    if (!this.game) return;
-    const opp = this.game.boards.find((b) => b.ownerId !== this.myPlayerId);
-    this.opponentBoardId = opp?.id ?? '';
   }
 
   isSetup() {
@@ -206,10 +234,12 @@ export class GameComponent implements OnInit {
           this.game = g;
           this.readyDone = true;
           this.readyLoading = false;
+          this.cdr.markForCheck();
         },
         error: () => {
           this.readyLoading = false;
           this.error = 'Ready fehlgeschlagen.';
+          this.cdr.markForCheck();
         },
       });
   }
@@ -226,14 +256,15 @@ export class GameComponent implements OnInit {
       .subscribe({
         next: (g) => {
           this.game = g;
-          this.setOpponentBoard();
           this.shotLoading = false;
-          this.loadBoardStates(); // nach Schuss neu laden, um Treffer/Miss/Sunk zu sehen
+          this.loadBoardStates();
+          this.cdr.markForCheck();
         },
         error: (err) => {
           console.error('Shot failed', err);
           this.shotError = 'Schuss fehlgeschlagen.';
           this.shotLoading = false;
+          this.cdr.markForCheck();
         },
       });
   }
@@ -255,17 +286,75 @@ export class GameComponent implements OnInit {
 
   cellStateForOpp(x: number, y: number): CellState {
     const key = `${x},${y}`;
-    if (this.oppHits.has(key)) return this.oppHits.get(key)!; // hit oder sunk
+    if (this.oppHits.has(key)) return this.oppHits.get(key)!;
     if (this.oppMisses.has(key)) return 'miss';
     return 'empty';
   }
 
   cellStateForMine(x: number, y: number): CellState {
     const key = `${x},${y}`;
-    if (this.myHits.has(key)) return this.myHits.get(key)!; // hit oder sunk
+    if (this.myHits.has(key)) return this.myHits.get(key)!;
     if (this.myMisses.has(key)) return 'miss';
     if (this.myShipCoords.has(key)) return 'ship';
     return 'empty';
+  }
+
+  connectWs() {
+    if (this.stomp || !this.gameCode) return;
+
+    this.stomp = new Client({
+      webSocketFactory: () => new SockJS('/ws'),
+      reconnectDelay: 5000,
+    });
+
+    this.stomp.onConnect = () => {
+      this.zone.run(() => {
+        this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
+        this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+      });
+    };
+
+    this.stomp.activate();
+  }
+
+  handleChat(msg: IMessage) {
+    const dto = JSON.parse(msg.body) as ChatDto;
+    this.zone.run(() => {
+      this.chatMessages = [...this.chatMessages, dto];
+      this.cdr.markForCheck();
+      this.scrollChatToBottom();
+    });
+  }
+
+  handleEvent(_msg: IMessage) {
+    this.zone.run(() => {
+      // Optional: this.loadGame();
+      this.cdr.markForCheck();
+    });
+  }
+
+  loadChatHistory() {
+    this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
+      next: (msgs) => {
+        this.chatMessages = msgs;
+        this.cdr.markForCheck();
+        this.scrollChatToBottom();
+      },
+    });
+  }
+
+  sendChat() {
+    if (!this.chatInput.trim()) return;
+    console.log('publish chat', this.chatInput, 'connected?', this.stomp?.connected);
+    this.stomp?.publish({
+      destination: `/app/games/${this.gameCode}/chat`,
+      body: JSON.stringify({
+        senderId: this.myPlayerId,
+        senderName: this.playerName(this.myPlayerId),
+        message: this.chatInput.trim(),
+      }),
+    });
+    this.chatInput = '';
   }
 
   protected readonly Math = Math;
