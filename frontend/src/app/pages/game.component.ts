@@ -362,9 +362,23 @@ export class GameComponent implements OnInit, OnDestroy {
         if (this.game && currentTurnPlayerId) {
           this.game = { ...this.game, currentTurnPlayerId };
           this.cdr.markForCheck();
+      }
+        return;
+      }
+
+      if (evt.type === 'GAME_FINISHED') {
+        const { winnerPlayerId } = evt.payload || {};
+        if (this.game) {
+          this.game = {
+            ...this.game,
+            status: 'FINISHED',
+            winnerPlayerId: winnerPlayerId ?? this.game.winnerPlayerId,
+          };
+          this.cdr.markForCheck();
         }
         return;
       }
+
     });
   }
 
