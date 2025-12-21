@@ -200,4 +200,15 @@ button.forfeit {
   .panel.chat {
     grid-column: auto;
   }
+  .players .player-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .player-status {
+    text-align: left;
+  }
+  .player-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
 }
