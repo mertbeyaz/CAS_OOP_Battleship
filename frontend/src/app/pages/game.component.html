@@ -47,6 +47,12 @@
               {{ game.status === 'RUNNING' ? 'Ready' : 'Wartet...' }}
             </span>
           </div>
+          <button
+            *ngIf="p.id === myPlayerId"
+            (click)="autoPlacement()"
+            [disabled]="!isSetup() || readyDone || autoLoading">
+            Autoplacement
+          </button>
         </div>
       </section>
 
