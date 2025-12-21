@@ -393,7 +393,6 @@ export class GameComponent implements OnInit, OnDestroy {
   }
 
 
-
   loadChatHistory() {
     this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
       next: (msgs) => {
