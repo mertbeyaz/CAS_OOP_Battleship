@@ -87,6 +87,90 @@ public class GameService {
         return gameRepository.save(game);
     }
 
+    public Game pauseGame(String gameCode, UUID requestedByPlayerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.RUNNING) {
+            throw new IllegalStateException("Can only pause a RUNNING game");
+        }
+
+        Player requestedBy = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), requestedByPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
+
+        game.setStatus(GameStatus.PAUSED);
+
+        Game saved = gameRepository.save(game);
+
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+            messagingTemplate.convertAndSend(destination, GameEventDto.gamePaused(saved, requestedBy));
+        }
+
+        return saved;
+    }
+
+    public Game resumeGame(String gameCode, UUID requestedByPlayerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.PAUSED) {
+            throw new IllegalStateException("Can only resume a PAUSED game");
+        }
+
+        Player requestedBy = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), requestedByPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
+
+        game.setStatus(GameStatus.RUNNING);
+
+        Game saved = gameRepository.save(game);
+
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+            messagingTemplate.convertAndSend(destination, GameEventDto.gameResumed(saved, requestedBy));
+        }
+
+        return saved;
+    }
+
+    public Game forfeitGame(String gameCode, UUID forfeitingPlayerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.RUNNING && game.getStatus() != GameStatus.PAUSED) {
+            throw new IllegalStateException("Can only forfeit a RUNNING or PAUSED game");
+        }
+
+        Player forfeitingPlayer = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), forfeitingPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
+
+        Player winner = game.getPlayers().stream()
+                .filter(p -> !Objects.equals(p.getId(), forfeitingPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Cannot determine winner"));
+
+        game.setStatus(GameStatus.FINISHED);
+        game.setWinnerPlayerId(winner.getId());
+
+        Game saved = gameRepository.save(game);
+
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+            messagingTemplate.convertAndSend(destination, GameEventDto.gameForfeited(saved, forfeitingPlayer, winner));
+
+            // optional: zusätzlich GAME_FINISHED schicken (wenn UI das bereits erwartet)
+            messagingTemplate.convertAndSend(destination, GameEventDto.gameFinished(saved, winner));
+        }
+
+        return saved;
+    }
+
     public Shot fireShot(String gameCode, UUID shooterId, UUID targetBoardId, int x, int y) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -321,8 +405,6 @@ public class GameService {
         return saved;
     }
 
-
-
     public String getBoardAscii(String gameCode, UUID boardId, boolean showShips) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -464,7 +546,6 @@ public class GameService {
 
         return sb.toString();
     }
-
 
     // ------------------------------------------------------------------------------------
     // Randomisierte Flottenplatzierung inklusive Abstand.

@@ -30,6 +30,48 @@ public class GameController {
         return ResponseEntity.ok(GameDto.from(game));
     }
 
+    @Operation(summary = "Pause a running game")
+    @PostMapping("/{gameCode}/pause")
+    public ResponseEntity<GameDto> pauseGame(@PathVariable String gameCode,
+                                             @RequestBody PlayerActionRequest request) {
+        try {
+            Game game = gameService.pauseGame(gameCode, request.playerId());
+            return ResponseEntity.ok(GameDto.from(game));
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
+    @Operation(summary = "Resume a paused game")
+    @PostMapping("/{gameCode}/resume")
+    public ResponseEntity<GameDto> resumeGame(@PathVariable String gameCode,
+                                              @RequestBody PlayerActionRequest request) {
+        try {
+            Game game = gameService.resumeGame(gameCode, request.playerId());
+            return ResponseEntity.ok(GameDto.from(game));
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
+    @Operation(summary = "Forfeit a game (concede)")
+    @PostMapping("/{gameCode}/forfeit")
+    public ResponseEntity<GameDto> forfeitGame(@PathVariable String gameCode,
+                                               @RequestBody PlayerActionRequest request) {
+        try {
+            Game game = gameService.forfeitGame(gameCode, request.playerId());
+            return ResponseEntity.ok(GameDto.from(game));
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        } catch (IllegalStateException e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+
     // Game per gameCode laden
     @Operation(summary = "Get a game by its code")
     @GetMapping("/{gameCode}")

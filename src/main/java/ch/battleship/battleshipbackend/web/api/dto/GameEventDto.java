@@ -102,4 +102,45 @@ public record GameEventDto(
                 )
         );
     }
+
+    public static GameEventDto gamePaused(Game game, Player requestedBy) {
+        return new GameEventDto(
+                GameEventType.GAME_PAUSED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "requestedByPlayerId", requestedBy.getId().toString(),
+                        "requestedByPlayerName", requestedBy.getUsername()
+                )
+        );
+    }
+
+    public static GameEventDto gameResumed(Game game, Player requestedBy) {
+        return new GameEventDto(
+                GameEventType.GAME_RESUMED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "requestedByPlayerId", requestedBy.getId().toString(),
+                        "requestedByPlayerName", requestedBy.getUsername()
+                )
+        );
+    }
+
+    public static GameEventDto gameForfeited(Game game, Player forfeitingPlayer, Player winner) {
+        return new GameEventDto(
+                GameEventType.GAME_FORFEITED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "forfeitingPlayerId", forfeitingPlayer.getId().toString(),
+                        "forfeitingPlayerName", forfeitingPlayer.getUsername(),
+                        "winnerPlayerId", winner.getId().toString(),
+                        "winnerPlayerName", winner.getUsername()
+                )
+        );
+    }
 }
