@@ -27,33 +27,37 @@
       </header>
 
       <section class="panel players">
-        <div class="panel-head">
-          <h2>Spieler</h2>
-        </div>
-        <div *ngFor="let p of game.players" class="player-row">
-          <div>
-            <strong>{{ p.username }}</strong>
-            <span *ngIf="p.id === myPlayerId" class="tag">Du</span>
-          </div>
-          <div class="ready">
-            <button
-              *ngIf="p.id === myPlayerId"
-              (click)="markReady()"
-              [disabled]="!isSetup() || readyLoading || readyDone"
-            >
-              {{ readyDone ? 'Ready' : 'Ready werden' }}
-            </button>
-            <span *ngIf="p.id !== myPlayerId">
-              {{ game.status === 'RUNNING' ? 'Ready' : 'Wartet...' }}
-            </span>
-          </div>
-          <button
-            *ngIf="p.id === myPlayerId"
-            (click)="autoPlacement()"
-            [disabled]="!isSetup() || readyDone || autoLoading">
-            Autoplacement
-          </button>
-        </div>
+        <table class="players-table">
+          <thead>
+          <tr>
+            <th>Spieler</th>
+            <th>Status</th>
+            <th>Aktionen</th>
+          </tr>
+          </thead>
+          <tbody>
+          <tr *ngFor="let p of game.players">
+            <td>
+              {{ p.username }}
+              <span *ngIf="p.id === myPlayerId" class="tag">(du)</span>
+            </td>
+            <td>{{ readyPlayers.has(p.id) ? 'Ready' : 'Wartet...' }}</td>
+            <td>
+              <ng-container *ngIf="p.id === myPlayerId">
+                <button (click)="markReady()" [disabled]="!isSetup() || readyLoading || readyDone">
+                  {{ readyDone ? 'Ready' : 'Ready werden' }}
+                </button>
+                <button (click)="autoPlacement()" [disabled]="!isSetup() || readyDone || autoLoading">
+                  Autoplacement
+                </button>
+                <button class="forfeit" (click)="forfeitGame()" [disabled]="forfeitLoading || game?.status === 'FINISHED'">
+                  Aufgeben
+                </button>
+              </ng-container>
+            </td>
+          </tr>
+          </tbody>
+        </table>
       </section>
 
       <section class="boards-grid">
