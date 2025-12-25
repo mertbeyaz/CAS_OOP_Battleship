@@ -87,6 +87,7 @@ export class GameComponent implements OnInit, OnDestroy {
   myMisses = new Set<string>();
   oppHits = new Map<string, CellState>();
   oppMisses = new Set<string>();
+  forfeitLoading = false;
 
   private stomp?: Client;
   private eventSub?: StompSubscription;
@@ -379,8 +380,18 @@ export class GameComponent implements OnInit, OnDestroy {
         return;
       }
 
+      if (evt.type === 'GAME_FORFEITED') {
+        const { winnerPlayerId } = evt.payload || {};
+        if (this.game) {
+          this.game = { ...this.game, status: 'FINISHED', winnerPlayerId };
+          this.cdr.markForCheck();
+        }
+        return;
+      }
+
     });
   }
+
 
 
   loadChatHistory() {
@@ -425,6 +436,25 @@ export class GameComponent implements OnInit, OnDestroy {
         },
         error: () => {
           this.autoLoading = false;
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  forfeitGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+    this.forfeitLoading = true;
+
+    this.http
+      .post<GameDto>(`${API_BASE_URL}/games/${this.gameCode}/forfeit`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (g) => {
+          this.game = g;
+          this.forfeitLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.forfeitLoading = false;
           this.cdr.markForCheck();
         },
       });
