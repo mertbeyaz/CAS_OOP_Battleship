@@ -363,7 +363,7 @@ export class GameComponent implements OnInit, OnDestroy {
         if (this.game && currentTurnPlayerId) {
           this.game = { ...this.game, currentTurnPlayerId };
           this.cdr.markForCheck();
-      }
+        }
         return;
       }
 
