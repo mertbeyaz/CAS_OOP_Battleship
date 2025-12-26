@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: postgres-dev
+    environment:
+      POSTGRES_DB: battleship
+      POSTGRES_USER: appsvc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_dev_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appsvc -d battleship"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: battleship-backend-dev
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:postgresql://192.168.1.158:5432/battleship
+      SPRING_DATASOURCE_USERNAME: appsvc
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pg_dev_data:
