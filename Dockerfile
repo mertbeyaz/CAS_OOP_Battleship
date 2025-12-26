@@ -1,12 +1,17 @@
-FROM eclipse-temurin:25-jre-alpine
-
+# ---- build stage ----
+FROM maven:3.9-eclipse-temurin-25 AS build
 WORKDIR /app
 
-# Jar ins Image kopieren
-COPY target/battleshipbackend-0.0.1-SNAPSHOT.jar app.jar
+COPY pom.xml .
+RUN mvn -q -DskipTests dependency:go-offline
 
-# Expose Port (info-only, für Doku)
+COPY src ./src
+RUN mvn -q -DskipTests package
+
+# ---- run stage ----
+FROM eclipse-temurin:25-jre
+WORKDIR /app
+
+COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
-
-# Java Prozess starten
-ENTRYPOINT ["java", "-jar", "app.jar"]
+ENTRYPOINT ["java","-jar","/app/app.jar"]
