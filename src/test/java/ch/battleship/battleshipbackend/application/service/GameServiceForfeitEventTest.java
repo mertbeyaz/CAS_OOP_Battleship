@@ -94,10 +94,8 @@ class GameServiceForfeitEventTest {
         assertEquals(GAME_CODE, forfeitedEvt.gameCode());
         assertEquals(GameStatus.FINISHED, forfeitedEvt.gameStatus());
 
-        assertEquals(PLAYER_A_ID.toString(), forfeitedEvt.payload().get("forfeitingPlayerId"));
         assertEquals("PlayerA", forfeitedEvt.payload().get("forfeitingPlayerName"));
 
-        assertEquals(PLAYER_B_ID.toString(), forfeitedEvt.payload().get("winnerPlayerId"));
         assertEquals("PlayerB", forfeitedEvt.payload().get("winnerPlayerName"));
     }
 

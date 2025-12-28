@@ -51,7 +51,7 @@ public class LobbyController {
                 ));
 
         // 3) Player-Id & Board-Id im DTO mitgeben
-        return LobbyDto.fromEntity(lobby, myPlayer, myBoard);
+        return LobbyDto.from(lobby, myPlayer,  myBoard);
     }
 }
 
