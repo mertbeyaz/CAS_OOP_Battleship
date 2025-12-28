@@ -95,7 +95,7 @@ class GameServiceWebSocketTest {
         ArgumentCaptor<GameEventDto> eventCaptor = ArgumentCaptor.forClass(GameEventDto.class);
 
         // Act
-        gameService.fireShot(code, attackerId, boardId, 3, 3);
+        gameService.fireShot(code, attackerId, 3, 3);
 
         // Assert – jetzt /events und GameEventDto
         String expectedDestination = "/topic/games/" + code + "/events";
@@ -114,19 +114,19 @@ class GameServiceWebSocketTest {
         assertThat(shotEvt.gameCode()).isEqualTo(code);
         assertThat(shotEvt.gameStatus()).isEqualTo(GameStatus.RUNNING);
 
-        // Payload Assertions (entspricht GameEventDto.shotFired(...))
-        assertThat(shotEvt.payload().get("attackerName")).isEqualTo("Attacker");
-        assertThat(shotEvt.payload().get("defenderName")).isEqualTo("Defender");
+        assertThat(shotEvt.payload()).containsKeys("x", "y", "result", "hit", "shipSunk");
+        assertThat(shotEvt.payload()).doesNotContainKeys(
+                "attackerId", "defenderId", "attackerName", "defenderName", "currentTurnPlayerId"
+        );
+
         assertThat(shotEvt.payload().get("x")).isEqualTo(3);
         assertThat(shotEvt.payload().get("y")).isEqualTo(3);
         assertThat(shotEvt.payload().get("result")).isIn("HIT", "SUNK");
         assertThat(shotEvt.payload().get("hit")).isEqualTo(true);
+        assertThat(shotEvt.payload().get("shipSunk")).isEqualTo(false);
 
         // Destroyer size 2: nach 1 Treffer nicht versenkt
         assertThat(shotEvt.payload().get("shipSunk")).isEqualTo(false);
-
-        // currentTurnPlayerId ist im Payload enthalten (bei HIT bleibt attacker dran)
-        assertThat(shotEvt.payload().get("currentTurnPlayerId")).isEqualTo(attackerId.toString());
 
         // Repository wurde wie erwartet benutzt
         verify(gameRepository, times(1)).findByGameCode(code);
@@ -144,7 +144,7 @@ class GameServiceWebSocketTest {
         // Act / Assert – Exception wird in GameServiceTest geprüft,
         // hier interessiert uns nur, dass KEIN Event gesendet wird.
         try {
-            gameService.fireShot(code, UUID.randomUUID(), UUID.randomUUID(), 0, 0);
+            gameService.fireShot(code, UUID.randomUUID(), 0, 0);
         } catch (Exception ignored) {
             // fachliche Exceptions sind hier egal
         }

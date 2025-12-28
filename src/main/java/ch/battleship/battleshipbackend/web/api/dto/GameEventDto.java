@@ -23,7 +23,6 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "playerId", player.getId().toString(),
                         "playerName", player.getUsername()
                 )
         );
@@ -36,21 +35,19 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "playerId", player.getId().toString(),
                         "playerName", player.getUsername()
                 )
         );
     }
 
-    public static GameEventDto gameStarted(Game game, Player firstTurnPlayer) {
+    public static GameEventDto gameStarted(Game game,Player currentTurnPlayer) {
         return new GameEventDto(
                 GameEventType.GAME_STARTED,
                 game.getGameCode(),
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "currentTurnPlayerId", firstTurnPlayer.getId().toString(),
-                        "currentTurnPlayerName", firstTurnPlayer.getUsername()
+                        "currentTurnPlayerName", currentTurnPlayer.getUsername()
                 )
         );
     }
@@ -62,7 +59,6 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "currentTurnPlayerId", currentTurnPlayer.getId().toString(),
                         "currentTurnPlayerName", currentTurnPlayer.getUsername(),
                         "lastShotResult", lastShotResult.name()
                 )
@@ -76,16 +72,11 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "attackerId", attacker.getId().toString(),
-                        "attackerName", attacker.getUsername(),
-                        "defenderId", defender.getId().toString(),
-                        "defenderName", defender.getUsername(),
                         "x", x,
                         "y", y,
                         "result", result.name(),
                         "hit", (result == ShotResult.HIT || result == ShotResult.SUNK),
-                        "shipSunk", (result == ShotResult.SUNK),
-                        "currentTurnPlayerId", game.getCurrentTurnPlayerId() == null ? null : game.getCurrentTurnPlayerId().toString()
+                        "shipSunk", (result == ShotResult.SUNK)
                 )
         );
     }
@@ -97,7 +88,6 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "winnerPlayerId", winner.getId().toString(),
                         "winnerPlayerName", winner.getUsername()
                 )
         );
@@ -110,7 +100,6 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "requestedByPlayerId", requestedBy.getId().toString(),
                         "requestedByPlayerName", requestedBy.getUsername()
                 )
         );
@@ -123,7 +112,6 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "requestedByPlayerId", requestedBy.getId().toString(),
                         "requestedByPlayerName", requestedBy.getUsername()
                 )
         );
@@ -136,11 +124,10 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
-                        "forfeitingPlayerId", forfeitingPlayer.getId().toString(),
                         "forfeitingPlayerName", forfeitingPlayer.getUsername(),
-                        "winnerPlayerId", winner.getId().toString(),
                         "winnerPlayerName", winner.getUsername()
                 )
         );
     }
+
 }

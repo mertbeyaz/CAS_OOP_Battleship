@@ -21,4 +21,5 @@ public record ShipPlacementDto(
                 placement.getShip().getType().getSize()
         );
     }
+
 }

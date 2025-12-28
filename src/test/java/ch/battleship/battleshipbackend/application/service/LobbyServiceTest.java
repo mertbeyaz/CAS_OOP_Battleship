@@ -3,16 +3,20 @@ package ch.battleship.battleshipbackend.application.service;
 import ch.battleship.battleshipbackend.domain.Game;
 import ch.battleship.battleshipbackend.domain.Lobby;
 import ch.battleship.battleshipbackend.domain.Player;
+import ch.battleship.battleshipbackend.domain.enums.LobbyEventType;
 import ch.battleship.battleshipbackend.domain.enums.LobbyStatus;
 import ch.battleship.battleshipbackend.domain.GameConfiguration;
 import ch.battleship.battleshipbackend.repository.LobbyRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.service.LobbyService;
+import ch.battleship.battleshipbackend.web.api.dto.LobbyEventDto;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentMatcher;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.util.Optional;
 
@@ -31,6 +35,9 @@ class LobbyServiceTest {
 
     @InjectMocks
     private LobbyService lobbyService;
+
+    @Mock
+    SimpMessagingTemplate messagingTemplate;
 
     @Test
     void joinOrCreateLobby_shouldJoinExistingWaitingLobby_andMarkFullWhenTwoPlayers() {
@@ -89,5 +96,55 @@ class LobbyServiceTest {
         assertThat(result).isSameAs(persistedLobby);
         verify(gameService).createGameAndJoinFirstPlayer(username);
         verify(lobbyRepository).save(any(Lobby.class));
+    }
+
+    @Test
+    void joinOrCreateLobby_whenSecondPlayerJoins_shouldMarkLobbyFullAndNotify() {
+        // Arrange
+        String lobbyCode = "TEST-LOBBY";
+        String gameCode = "TEST-GAME";
+        String joiningUsername = "Player2";
+
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        Game game = new Game(gameCode, config);
+        game.addPlayer(new Player("Player1"));
+        game.addPlayer(new Player(joiningUsername));
+
+        Lobby lobby = new Lobby(lobbyCode, game);
+        lobby.setStatus(LobbyStatus.WAITING);
+
+        when(lobbyRepository.findFirstByStatusOrderByCreatedAtAsc(LobbyStatus.WAITING))
+                .thenReturn(Optional.of(lobby));
+
+        when(gameService.joinGame(gameCode, joiningUsername)).thenReturn(game);
+
+        when(lobbyRepository.save(any(Lobby.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Act
+        Lobby result = lobbyService.joinOrCreateLobby(joiningUsername);
+
+        // Assert
+        assertThat(result.getStatus()).isEqualTo(LobbyStatus.FULL);
+        verify(lobbyRepository).save(lobby);
+
+        String destination = "/topic/lobbies/" + lobbyCode + "/events";
+
+        verify(messagingTemplate).convertAndSend(eq(destination), argThat(matchesLobbyFullEvent(
+                lobbyCode, gameCode, joiningUsername
+        )));
+
+        verifyNoMoreInteractions(messagingTemplate);
+    }
+
+    private static ArgumentMatcher<LobbyEventDto> matchesLobbyFullEvent(
+            String lobbyCode, String gameCode, String joiningUsername
+    ) {
+        return dto ->
+                dto != null
+                        && dto.type() == LobbyEventType.LOBBY_FULL
+                        && lobbyCode.equals(dto.lobbyCode())
+                        && gameCode.equals(dto.gameCode())
+                        && "FULL".equals(dto.status())
+                        && joiningUsername.equals(dto.joinedUsername());
     }
 }

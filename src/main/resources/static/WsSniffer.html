@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>BattleShip WS Sniffer</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 16px; }
+        input { padding: 6px 8px; width: 220px; }
+        button { padding: 6px 10px; margin-left: 8px; }
+        pre { background: #111; color: #0f0; padding: 12px; border-radius: 8px; max-height: 70vh; overflow: auto; }
+        .row { margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+<h2>WS Sniffer (STOMP)</h2>
+
+<div class="row">
+    <label>Game Code: </label>
+    <input id="gameCode" placeholder="e.g. ABCD-1234" />
+    <button id="connectBtn">Connect & Subscribe</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+</div>
+
+<div class="row">
+    <label>WS URL: </label>
+    <input id="wsUrl" value="http://localhost:8080/ws" style="width: 320px;" />
+    <small>(adjust if needed)</small>
+</div>
+
+<pre id="log"></pre>
+
+<!-- SockJS + STOMP -->
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+<script>
+    const logEl = document.getElementById("log");
+    const gameCodeEl = document.getElementById("gameCode");
+    const wsUrlEl = document.getElementById("wsUrl");
+    const connectBtn = document.getElementById("connectBtn");
+    const disconnectBtn = document.getElementById("disconnectBtn");
+
+    let stompClient = null;
+
+    function log(msg) {
+        logEl.textContent += msg + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    connectBtn.addEventListener("click", () => {
+        const gameCode = gameCodeEl.value.trim();
+        if (!gameCode) return log("Please enter gameCode.");
+
+        const wsUrl = wsUrlEl.value.trim();
+        log(`Connecting to ${wsUrl} ...`);
+
+        const socket = new SockJS(wsUrl);
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null; // silence internal logs; set to console.log if you want
+
+        stompClient.connect({}, () => {
+            log("Connected ✅");
+            connectBtn.disabled = true;
+            disconnectBtn.disabled = false;
+
+            const topic = `/topic/games/${gameCode}/events`;
+            log(`Subscribing to ${topic} ...`);
+
+            stompClient.subscribe(topic, (message) => {
+                try {
+                    const obj = JSON.parse(message.body);
+                    log("⬇️ " + JSON.stringify(obj, null, 2));
+                } catch (e) {
+                    log("⬇️ " + message.body);
+                }
+            });
+        }, (err) => {
+            log("Connect error: " + JSON.stringify(err));
+        });
+    });
+
+    disconnectBtn.addEventListener("click", () => {
+        if (stompClient) {
+            stompClient.disconnect(() => log("Disconnected ❌"));
+            stompClient = null;
+        }
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+    });
+</script>
+</body>
+</html>

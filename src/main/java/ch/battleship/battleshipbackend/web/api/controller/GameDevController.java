@@ -13,7 +13,7 @@ import java.util.UUID;
 
 @Profile({"dev", "test"})
 @RestController
-@RequestMapping("/api/games")
+@RequestMapping("/api/dev/games")
 public class GameDevController {
 
     private final GameService gameService;

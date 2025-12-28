@@ -11,6 +11,7 @@ import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
+import ch.battleship.battleshipbackend.web.api.dto.GamePublicDto;
 import ch.battleship.battleshipbackend.web.api.dto.ShipPlacementDto;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.Nested;
@@ -26,6 +27,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
@@ -294,13 +296,13 @@ class GameServiceTest {
         // >>> IDs simulieren (persistierter Zustand)
         UUID attackerId = UUID.randomUUID();
         UUID defenderId = UUID.randomUUID();
-        UUID boardId = UUID.randomUUID();
+
 
         setId(attacker, attackerId);
         setId(defender, defenderId);
 
         game.setCurrentTurnPlayerId(attacker.getId());
-        setId(defenderBoard, boardId);
+
 
         // --- Stubbing ---
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
@@ -314,7 +316,6 @@ class GameServiceTest {
         Shot shot = gameService.fireShot(
                 code,
                 attackerId,
-                boardId,
                 3,
                 3
         );
@@ -340,7 +341,7 @@ class GameServiceTest {
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() ->
-                gameService.fireShot(code, UUID.randomUUID(), UUID.randomUUID(), 0, 0)
+                gameService.fireShot(code, UUID.randomUUID(), 0, 0)
         ).isInstanceOf(EntityNotFoundException.class);
 
         verify(gameRepository, never()).save(any());
@@ -354,7 +355,7 @@ class GameServiceTest {
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
         assertThatThrownBy(() ->
-                gameService.fireShot(code, UUID.randomUUID(), UUID.randomUUID(), 0, 0)
+                gameService.fireShot(code, UUID.randomUUID(), 0, 0)
         ).isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not RUNNING");
 
@@ -387,7 +388,7 @@ class GameServiceTest {
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
         // Act + Assert
-        assertThatThrownBy(() -> gameService.fireShot(code, shooterId, defenderBoard.getId(), 1, 1))
+        assertThatThrownBy(() -> gameService.fireShot(code, shooterId, 1, 1))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Shooter does not belong");
 
@@ -396,7 +397,7 @@ class GameServiceTest {
 
 
     @Test
-    void fireShot_shouldThrowIllegalState_whenShootingOwnBoard() {
+    void fireShot_shouldThrowIllegalState_whenOpponentBoardMissing() {
         // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
@@ -411,22 +412,19 @@ class GameServiceTest {
         game.addPlayer(attacker);
         game.addPlayer(defender);
 
+        // NUR das Board vom Attacker (Defender hat keins -> Gegner-Board fehlt)
         Board attackerBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), attacker);
-        Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
         setId(attackerBoard, UUID.randomUUID());
-        setId(defenderBoard, UUID.randomUUID());
         game.addBoard(attackerBoard);
-        game.addBoard(defenderBoard);
 
-        // IMPORTANT: Turn setzen, sonst knallt es vorher
         game.setCurrentTurnPlayerId(attacker.getId());
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
         // Act + Assert
-        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), attackerBoard.getId(), 1, 1))
+        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), 1, 1))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("cannot shoot at own board");
+                .hasMessageContaining("No opponent board found for this game"); // oder exakt die Message, die du wirfst
 
         verifyNoInteractions(shotRepository);
     }
@@ -458,89 +456,111 @@ class GameServiceTest {
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
         // Act + Assert
-        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), defenderBoard.getId(), 999, 999))
+        assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), 999, 999))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("out of board bounds");
 
         verifyNoInteractions(shotRepository);
     }
+    /*
+    "  Public state
+     */
+    @Test
+    void getPublicState_shouldBeRobust_whenOnlyOnePlayerInWaiting() {
+        // Arrange
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        Game game = new Game("TEST-CODE", config);
+        game.setStatus(GameStatus.WAITING);
 
+        Player playerA = new Player("PlayerA");
+        setId(playerA, UUID.randomUUID());
+        game.addPlayer(playerA);
+
+        Board boardA = new Board(config.getBoardWidth(), config.getBoardHeight(), playerA);
+        setId(boardA, UUID.randomUUID());
+        game.addBoard(boardA);
+
+        when(gameRepository.findByGameCode("TEST-CODE")).thenReturn(Optional.of(game));
+
+        // Act
+        GamePublicDto dto = gameService.getPublicState("TEST-CODE", playerA.getId());
+
+        // Assert
+        assertEquals("TEST-CODE", dto.gameCode());
+        assertEquals(GameStatus.WAITING, dto.status());
+        assertFalse(dto.yourTurn());
+        assertFalse(dto.opponentBoardLocked());
+        assertNull(dto.opponentName());
+    }
 
     @Test
-    void getBoardState_shouldReturnBoardWithShipsAndShots() {
+    void getPublicState_shouldNotCrash_whenOpponentExistsButHasNoBoard() {
         // Arrange
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        Game game = new Game("TEST-CODE", config);
+        game.setStatus(GameStatus.SETUP);
+
+        Player playerA = new Player("PlayerA");
+        Player playerB = new Player("PlayerB");
+        setId(playerA, UUID.randomUUID());
+        setId(playerB, UUID.randomUUID());
+
+        game.addPlayer(playerA);
+        game.addPlayer(playerB);
+
+        // Nur Board für A, bewusst kein Board für B
+        Board boardA = new Board(config.getBoardWidth(), config.getBoardHeight(), playerA);
+        setId(boardA, UUID.randomUUID());
+        game.addBoard(boardA);
+
+        when(gameRepository.findByGameCode("TEST-CODE")).thenReturn(Optional.of(game));
+
+        // Act
+        GamePublicDto dto = gameService.getPublicState("TEST-CODE", playerA.getId());
+
+        // Assert
+        assertEquals(GameStatus.SETUP, dto.status());
+        assertFalse(dto.yourTurn());
+        assertFalse(dto.opponentBoardLocked()); // kein Board -> false
+        assertEquals("PlayerB", dto.opponentName()); // Gegner existiert, auch wenn Board fehlt
+    }
+
+    /*
+    *  Boardstate
+     */
+    @Test
+    void getBoardState_shouldReturnBoardWithShipPlacements() {
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
 
-        Player attacker = new Player("Attacker");
         Player defender = new Player("Defender");
-        game.addPlayer(attacker);
         game.addPlayer(defender);
 
-        Board defenderBoard = new Board(
-                config.getBoardWidth(),
-                config.getBoardHeight(),
-                defender
-        );
-
-        // Ein Schiff platzieren: DESTROYER bei (3,3) horizontal
+        Board board = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
         Ship ship = new Ship(ShipType.DESTROYER);
-        defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
+        board.placeShip(ship, new Coordinate(3,3), Orientation.HORIZONTAL);
 
-        game.addBoard(defenderBoard);
-
-        // Zwei Schüsse auf dieses Board (direkt über Domain, ohne Service)
-        game.fireShot(attacker, defenderBoard, new Coordinate(3, 3)); // HIT
-        game.fireShot(attacker, defenderBoard, new Coordinate(0, 0)); // MISS
-
-        // IDs simulieren
-        UUID attackerId = UUID.randomUUID();
-        UUID defenderId = UUID.randomUUID();
         UUID boardId = UUID.randomUUID();
+        setId(board, boardId);
 
-        setId(attacker, attackerId);
-        setId(defender, defenderId);
-        setId(defenderBoard, boardId);
+        game.addBoard(board);
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
-        // Act
         BoardStateDto state = gameService.getBoardState(code, boardId);
 
-        // Assert
         assertThat(state.boardId()).isEqualTo(boardId);
         assertThat(state.width()).isEqualTo(config.getBoardWidth());
         assertThat(state.height()).isEqualTo(config.getBoardHeight());
-        assertThat(state.ownerId()).isEqualTo(defenderId);
-        assertThat(state.ownerUsername()).isEqualTo("Defender");
+        assertThat(state.locked()).isFalse();
 
-        // Schiffe
-        assertThat(state.ships()).hasSize(1);
-        ShipPlacementDto sp = state.ships().get(0);
+        assertThat(state.shipPlacements()).hasSize(1);
+        var sp = state.shipPlacements().get(0);
         assertThat(sp.type()).isEqualTo(ShipType.DESTROYER);
         assertThat(sp.startX()).isEqualTo(3);
         assertThat(sp.startY()).isEqualTo(3);
         assertThat(sp.orientation()).isEqualTo(Orientation.HORIZONTAL);
-        assertThat(sp.size()).isEqualTo(2);
-
-        // Shots auf dieses Board
-        assertThat(state.shotsOnThisBoard()).hasSize(2);
-        assertThat(state.shotsOnThisBoard()).anyMatch(s ->
-                Integer.valueOf(3).equals(s.get("x")) &&
-                        Integer.valueOf(3).equals(s.get("y")) &&
-                        "HIT".equals(s.get("result"))
-        );
-
-        assertThat(state.shotsOnThisBoard()).anyMatch(s ->
-                Integer.valueOf(0).equals(s.get("x")) &&
-                        Integer.valueOf(0).equals(s.get("y")) &&
-                        "MISS".equals(s.get("result"))
-        );
-
-        // Kein save(), da getBoardState nur liest
-        verify(gameRepository, times(1)).findByGameCode(code);
-        verifyNoMoreInteractions(gameRepository);
     }
 
     @Test
@@ -695,7 +715,9 @@ class GameServiceTest {
 
     }
 
-
+    /*
+    * Helper
+     */
     private void printBoard(Board board) {
         int width = board.getWidth();
         int height = board.getHeight();

@@ -1,20 +1,19 @@
-// src/main/java/ch/battleship/battleshipbackend/service/LobbyService.java
+
 package ch.battleship.battleshipbackend.service;
 
 import ch.battleship.battleshipbackend.domain.Game;
-import ch.battleship.battleshipbackend.domain.GameConfiguration;
+
 import ch.battleship.battleshipbackend.domain.Lobby;
-import ch.battleship.battleshipbackend.domain.Player;
-import ch.battleship.battleshipbackend.domain.enums.GameStatus;
+import ch.battleship.battleshipbackend.domain.enums.LobbyEventType;
 import ch.battleship.battleshipbackend.domain.enums.LobbyStatus;
 import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.LobbyRepository;
+import ch.battleship.battleshipbackend.web.api.dto.LobbyEventDto;
+import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.Optional;
-import java.util.UUID;
 
 @Service
 @Transactional
@@ -23,13 +22,16 @@ public class LobbyService {
     private final LobbyRepository lobbyRepository;
     private final GameRepository gameRepository;
     private final GameService gameService;
+    private final SimpMessagingTemplate messagingTemplate;
 
     public LobbyService(LobbyRepository lobbyRepository,
                         GameRepository gameRepository,
-                        GameService gameService) {
+                        GameService gameService,
+                        SimpMessagingTemplate messagingTemplate) {
         this.lobbyRepository = lobbyRepository;
         this.gameRepository = gameRepository;
         this.gameService = gameService;
+        this.messagingTemplate = messagingTemplate;
     }
 
     /**
@@ -50,7 +52,19 @@ public class LobbyService {
             // nach dem Join: wenn 2 Spieler => Lobby FULL
             if (game.getPlayers().size() >= 2) {
                 lobby.setStatus(LobbyStatus.FULL);
-                lobbyRepository.save(lobby); // persistierten Status
+                lobbyRepository.save(lobby);
+
+                var event = new LobbyEventDto(
+                        LobbyEventType.LOBBY_FULL,
+                        lobby.getLobbyCode(),
+                        game.getGameCode(),
+                        lobby.getStatus().name(),
+                        username
+                );
+
+                String destination = "/topic/lobbies/" + lobby.getLobbyCode() + "/events";
+                messagingTemplate.convertAndSend(destination, event);
+
             }
 
             return lobby;

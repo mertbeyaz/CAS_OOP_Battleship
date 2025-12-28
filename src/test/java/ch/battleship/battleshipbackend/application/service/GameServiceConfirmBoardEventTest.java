@@ -11,6 +11,7 @@ import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.GameEventDto;
 
+import ch.battleship.battleshipbackend.web.api.dto.GamePublicDto;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -100,7 +101,7 @@ class GameServiceConfirmBoardEventTest {
         assertEquals(GAME_CODE, evt.gameCode());
         assertEquals(GameStatus.SETUP, evt.gameStatus());
 
-        assertEquals(PLAYER_A_ID.toString(), evt.payload().get("playerId"));
+        assertFalse(evt.payload().containsKey("playerId"));
         assertEquals("PlayerA", evt.payload().get("playerName"));
     }
 
@@ -111,13 +112,15 @@ class GameServiceConfirmBoardEventTest {
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // Act
-        gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
-        Game updated = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
+        GamePublicDto dtoA = gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
+        GamePublicDto dtoB = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
-        // Assert: game started
-        assertEquals(GameStatus.RUNNING, updated.getStatus());
-        assertNotNull(updated.getCurrentTurnPlayerId());
+        // Assert: game started (DTO Sicht von Spieler B)
+        assertEquals(GameStatus.RUNNING, dtoB.status());
+        assertTrue(dtoB.yourBoardLocked());
+        assertTrue(dtoB.opponentBoardLocked());
 
+        // Events: 2x BOARD_CONFIRMED + 1x GAME_STARTED
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate, times(3))
                 .convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
@@ -126,19 +129,36 @@ class GameServiceConfirmBoardEventTest {
         assertEquals(GameEventType.BOARD_CONFIRMED, captor.getAllValues().get(1).type());
         assertEquals(GameEventType.GAME_STARTED, captor.getAllValues().get(2).type());
 
+        // GAME_STARTED payload darf keine IDs mehr enthalten
         GameEventDto started = captor.getAllValues().get(2);
-        assertEquals(updated.getCurrentTurnPlayerId().toString(), started.payload().get("currentTurnPlayerId"));
-        assertNotNull(started.payload().get("currentTurnPlayerName"));
+        assertFalse(started.payload().containsKey("currentTurnPlayerId"));
+        //assertFalse(started.payload().containsKey("currentTurnPlayerName"));
+    }
+
+    @Test
+    void confirmBoard_shouldAssignFirstTurnPlayerId_whenGameStarts() {
+        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
+        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
+        gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
+
+        ArgumentCaptor<Game> gameCaptor = ArgumentCaptor.forClass(Game.class);
+        verify(gameRepository, atLeastOnce()).save(gameCaptor.capture());
+
+        Game persisted = gameCaptor.getValue();
+        assertEquals(GameStatus.RUNNING, persisted.getStatus());
+        assertNotNull(persisted.getCurrentTurnPlayerId());
     }
 
     @Test
     void confirmBoard_shouldSendBoardConfirmedEvent_withRunningStatus_whenSecondPlayerConfirms() {
         // Act
         gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
-        Game savedAfterSecond = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
+        GamePublicDto dtoAfterSecond = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
-        // Assert
-        assertEquals(GameStatus.RUNNING, savedAfterSecond.getStatus());
+        // Assert (REST / DTO)
+        assertEquals(GameStatus.RUNNING, dtoAfterSecond.status());
 
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate, times(3))
@@ -148,11 +168,16 @@ class GameServiceConfirmBoardEventTest {
         GameEventDto secondConfirm = captor.getAllValues().get(1);
         assertEquals(GameEventType.BOARD_CONFIRMED, secondConfirm.type());
         assertEquals(GameStatus.RUNNING, secondConfirm.gameStatus());
-        assertEquals(PLAYER_B_ID.toString(), secondConfirm.payload().get("playerId"));
+
+
+        // Option 2 (strenger): gar keine IDs in WS -> dann so:
+        assertFalse(secondConfirm.payload().containsKey("playerId"));
 
         GameEventDto started = captor.getAllValues().get(2);
         assertEquals(GameEventType.GAME_STARTED, started.type());
-        assertNotNull(started.payload().get("currentTurnPlayerId"));
+
+        // Variante A: GAME_STARTED darf KEINE Turn-IDs mehr enthalten
+        assertFalse(started.payload().containsKey("currentTurnPlayerId"));
     }
 
     @Test

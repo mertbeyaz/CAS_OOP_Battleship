@@ -3,8 +3,7 @@ package ch.battleship.battleshipbackend.application.service;
 import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 import ch.battleship.battleshipbackend.domain.Board;
 import ch.battleship.battleshipbackend.domain.Game;
@@ -19,10 +18,12 @@ import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
 import java.util.Optional;
 import java.util.UUID;
 
+import ch.battleship.battleshipbackend.web.api.dto.GamePublicDto;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -92,8 +93,8 @@ class GameSetupPhaseTest {
         assertEquals(boardA.getId(), dto.boardId());
 
         // 2x2 + 2x3 + 1x4 + 1x5 => 6 Schiffe, total 19 Zellen
-        assertEquals(6, dto.ships().size(), "Expected ship count to match fleetDefinition");
-        int totalCells = dto.ships().stream().mapToInt(s -> s.size()).sum();
+        assertEquals(6, dto.shipPlacements().size(), "Expected ship count to match fleetDefinition");
+        int totalCells = dto.shipPlacements().stream().mapToInt(s -> s.size()).sum();
         assertEquals(19, totalCells, "Expected total ship cells to match fleetDefinition");
     }
 
@@ -117,14 +118,19 @@ class GameSetupPhaseTest {
 
     @Test
     void confirmBoard_shouldLockBoard_andStayInSetup_whenOnlyOnePlayerConfirmed() {
-        // board muss "ready" sein (placements vorhanden)
+
         gameService.rerollBoard(GAME_CODE, playerA.getId());
 
-        Game saved = gameService.confirmBoard(GAME_CODE, playerA.getId());
+        gameService.confirmBoard(GAME_CODE, playerA.getId());
 
         assertTrue(boardA.isLocked());
         assertFalse(boardB.isLocked());
-        assertEquals(GameStatus.SETUP, saved.getStatus());
+
+        ArgumentCaptor<Game> gameCaptor = ArgumentCaptor.forClass(Game.class);
+        verify(gameRepository, atLeastOnce()).save(gameCaptor.capture());
+        Game persisted = gameCaptor.getValue();
+
+        assertEquals(GameStatus.SETUP, persisted.getStatus());
     }
 
     @Test
@@ -133,11 +139,15 @@ class GameSetupPhaseTest {
         gameService.rerollBoard(GAME_CODE, playerB.getId());
 
         gameService.confirmBoard(GAME_CODE, playerA.getId());
-        Game saved = gameService.confirmBoard(GAME_CODE, playerB.getId());
+        GamePublicDto dto = gameService.confirmBoard(GAME_CODE, playerB.getId());
 
         assertTrue(boardA.isLocked());
         assertTrue(boardB.isLocked());
-        assertEquals(GameStatus.RUNNING, saved.getStatus(),
+        assertEquals(GameStatus.RUNNING, dto.status(),
                 "Game should become RUNNING after both players confirmed");
+
+        // Optional: DTO Sicht von Player B (sollte nach 2nd confirm beide boards locked sehen)
+        assertTrue(dto.yourBoardLocked());
+        assertTrue(dto.opponentBoardLocked());
     }
 }
