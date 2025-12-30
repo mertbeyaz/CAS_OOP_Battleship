@@ -5,19 +5,32 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { API_BASE_URL } from '../app.config';
 
-type LobbyResponse = {
+type LobbyDto = {
   lobbyCode: string;
   gameCode: string;
   status: string;
   myPlayerId: string;
-  myBoardId: string;
-  players: Array<{ id: string; username: string; boardId: string | null }>;
+  myPlayerName: string;
+  myBoard?: {
+    boardId: string;
+    width: number;
+    height: number;
+    locked: boolean;
+    shipPlacements: Array<{
+      type: string;
+      startX: number;
+      startY: number;
+      orientation: 'HORIZONTAL' | 'VERTICAL';
+      size: number;
+    }>;
+  } | null;
 };
 
-type GameDto = {
+type JoinGameResponseDto = {
   gameCode: string;
-  players: Array<{ id: string; username: string }>;
-  boards: Array<{ id: string; width: number; height: number; ownerId: string; ownerUsername: string }>;
+  playerId: string;
+  playerName: string;
+  status: 'WAITING' | 'SETUP' | 'RUNNING' | 'PAUSED' | 'FINISHED';
 };
 
 @Component({
@@ -50,7 +63,7 @@ export class LandingComponent {
     this.errorQuick = '';
 
     this.http
-      .post<LobbyResponse>(`${API_BASE_URL}/lobbies/auto-join`, { username: name })
+      .post<LobbyDto>(`${API_BASE_URL}/lobbies/auto-join`, { username: name })
       .subscribe({
         next: (res) => {
           this.loadingQuick = false;
@@ -58,7 +71,10 @@ export class LandingComponent {
             queryParams: {
               gameCode: res.gameCode,
               playerId: res.myPlayerId,
-              boardId: res.myBoardId,
+              playerName: res.myPlayerName,
+            },
+            state: {
+              myBoard: res.myBoard,
             },
           });
         },
@@ -80,28 +96,15 @@ export class LandingComponent {
     this.errorJoin = '';
 
     this.http
-      .post<GameDto>(`${API_BASE_URL}/games/${code}/join`, { username: name })
+      .post<JoinGameResponseDto>(`${API_BASE_URL}/games/${code}/join`, { username: name })
       .subscribe({
         next: (res) => {
-          const me = res.players.find((p) => p.username === name);
-          if (!me) {
-            this.loadingJoin = false;
-            this.errorJoin = 'Player nicht gefunden.';
-            return;
-          }
-          const myBoard = res.boards.find((b) => b.ownerId === me.id);
-          if (!myBoard) {
-            this.loadingJoin = false;
-            this.errorJoin = 'Board nicht gefunden.';
-            return;
-          }
-
           this.loadingJoin = false;
           this.router.navigate(['/game'], {
             queryParams: {
               gameCode: res.gameCode,
-              playerId: me.id,
-              boardId: myBoard.id,
+              playerId: res.playerId,
+              playerName: res.playerName,
             },
           });
         },
