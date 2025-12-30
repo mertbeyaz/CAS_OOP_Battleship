@@ -146,20 +146,24 @@ public class GameService {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
 
+        // Idempotent: already running -> return snapshot + current turn
         if (game.getStatus() == GameStatus.RUNNING) {
             return new GameResumeResponseDto(
                     game.getGameCode(),
                     game.getStatus(),
                     true,
                     requestedBy.getUsername(),
+                    getCurrentTurnPlayerName(game),
                     toSnapshot(game, requestedByPlayerId)
             );
         }
 
+        // WAITING is allowed only if it's part of the resume-handshake
         if (game.getStatus() == GameStatus.WAITING && game.getResumeReadyPlayerId() == null) {
             throw new IllegalStateException("WAITING game cannot be resumed (not in resume-handshake)");
         }
 
+        // Allowed: PAUSED or WAITING (resume-handshake)
         if (game.getStatus() != GameStatus.PAUSED && game.getStatus() != GameStatus.WAITING) {
             throw new IllegalStateException("Can only resume a PAUSED/WAITING game");
         }
@@ -168,28 +172,36 @@ public class GameService {
 
         Game saved;
         if (game.getStatus() == GameStatus.PAUSED) {
+            // first player confirms resume -> go WAITING
             game.setStatus(GameStatus.WAITING);
             game.setResumeReadyPlayerId(requestedByPlayerId);
+
             saved = gameRepository.save(game);
             sendEventWaiting(saved, requestedBy);
         } else {
+            // status == WAITING
             if (Objects.equals(first, requestedByPlayerId)) {
-                saved = game; // idempotent
+                // same player again -> idempotent
+                saved = game;
             } else {
+                // second player confirms -> RUNNING
                 game.setStatus(GameStatus.RUNNING);
                 game.setResumeReadyPlayerId(null);
+
                 saved = gameRepository.save(game);
                 sendEventResumed(saved, requestedBy);
             }
         }
 
         boolean handshakeComplete = saved.getStatus() == GameStatus.RUNNING;
+        String turnName = handshakeComplete ? getCurrentTurnPlayerName(saved) : null;
 
         return new GameResumeResponseDto(
                 saved.getGameCode(),
                 saved.getStatus(),
                 handshakeComplete,
                 requestedBy.getUsername(),
+                turnName,
                 toSnapshot(saved, requestedByPlayerId)
         );
     }
@@ -401,7 +413,7 @@ public class GameService {
             // BOARD_CONFIRMED
             messagingTemplate.convertAndSend(destination, GameEventDto.boardConfirmed(saved, confirmingPlayer));
 
-            // GAME_STARTED (inkl. currentTurnPlayerName)
+            // GAME_STARTED (inkl. getCurrentTurnPlayerName)
             if (allLocked) {
                 Player currentTurnPlayer = saved.getPlayers().stream()
                         .filter(p -> Objects.equals(p.getId(), saved.getCurrentTurnPlayerId()))
@@ -470,10 +482,27 @@ public class GameService {
 
     private void sendEventResumed(Game game, Player requestedBy) {
         if (messagingTemplate == null) return;
+
+        Player currentTurnPlayer = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), game.getCurrentTurnPlayerId()))
+                .findFirst()
+                .orElse(null);
+
         messagingTemplate.convertAndSend("/topic/games/" + game.getGameCode() + "/events",
-                GameEventDto.gameResumed(game, requestedBy));
+                GameEventDto.gameResumed(game, requestedBy,
+                        currentTurnPlayer == null ? null : currentTurnPlayer.getUsername()));
     }
 
+    private String getCurrentTurnPlayerName(Game game) {
+        UUID id = game.getCurrentTurnPlayerId();
+        if (id == null) return null;
+
+        return game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), id))
+                .map(Player::getUsername)
+                .findFirst()
+                .orElse(null);
+    }
 
     private List<ShipType> parseFleetDefinition(GameConfiguration config) {
         String definition = config.getFleetDefinition();

@@ -7,6 +7,7 @@ import ch.battleship.battleshipbackend.domain.enums.GameStatus;
 import ch.battleship.battleshipbackend.domain.enums.ShotResult;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Map;
 
 public record GameEventDto(
@@ -72,6 +73,8 @@ public record GameEventDto(
                 game.getStatus(),
                 Instant.now(),
                 Map.of(
+                        "shooterPlayerName", attacker.getUsername(),
+                        "targetPlayerName", defender.getUsername(),
                         "x", x,
                         "y", y,
                         "result", result.name(),
@@ -118,15 +121,18 @@ public record GameEventDto(
         );
     }
 
-    public static GameEventDto gameResumed(Game game, Player requestedBy) {
+    public static GameEventDto gameResumed(Game game, Player requestedBy, String currentTurnPlayerName) {
+        // We should not use Map.of directly in GameEventDto, because of possible null reference
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("requestedByPlayerName", requestedBy.getUsername());
+        payload.put("currentTurnPlayerName", currentTurnPlayerName);
+
         return new GameEventDto(
                 GameEventType.GAME_RESUMED,
                 game.getGameCode(),
                 game.getStatus(),
                 Instant.now(),
-                Map.of(
-                        "requestedByPlayerName", requestedBy.getUsername()
-                )
+                payload
         );
     }
 
