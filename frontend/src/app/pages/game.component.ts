@@ -47,8 +47,23 @@ type ShotResultDto = {
   yourTurn: boolean;
 };
 
+type ShotDto = { x: number; y: number; result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT' };
+
+type GameSnapshotDto = {
+  boardWidth: number;
+  boardHeight: number;
+  yourBoard: BoardStateDto;
+  shotsOnYourBoard: ShotDto[];
+  yourShotsOnOpponent: ShotDto[];
+};
+
+type ResumeResponseDto = {
+  status: string;
+  snapshot?: GameSnapshotDto;
+};
+
 type ChatDto = { senderId: string; senderName: string; gameCode: string; message: string; timestamp: string };
-type CellState = 'empty' | 'ship';
+type CellState = 'empty' | 'ship' | 'miss' | 'hit' | 'sunk';
 
 @Component({
   standalone: true,
@@ -61,9 +76,9 @@ type CellState = 'empty' | 'ship';
 export class GameComponent implements OnInit, OnDestroy {
   private http = inject(HttpClient);
   private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private cdr = inject(ChangeDetectorRef);
   private zone = inject(NgZone);
-  private router = inject(Router);
 
   @ViewChild('messagesContainer') private messagesEl?: ElementRef<HTMLDivElement>;
 
@@ -80,22 +95,41 @@ export class GameComponent implements OnInit, OnDestroy {
   shotError = '';
   autoLoading = false;
   forfeitLoading = false;
+  pauseLoading = false;
+  lobbyCode = '';
+  waitingForResume = false; // Due to hand-shake from the oppenent player
+  forfeitedByName = '';
+
+
+  // Board sizes (fixed to 10x10, can be overwritten by snapshot)
+  boardWidth = 10;
+  boardHeight = 10;
 
   myBoardState?: BoardStateDto;
-
   myShipCoords = new Set<string>();
+
+  // Local shot history (no API available)
+  myShotsOnOpponent = new Map<string, 'hit' | 'sunk' | 'miss'>();
+  shotsOnMyBoard = new Map<string, 'hit' | 'sunk' | 'miss'>();
+
+  protected readonly Math = Math;
+  private lastShotSent?: { x: number; y: number };
 
   private stomp?: Client;
   private eventSub?: StompSubscription;
   private chatSub?: StompSubscription;
+  private lobbySub: any;
 
   chatMessages: ChatDto[] = [];
   chatInput = '';
+
 
   ngOnInit(): void {
     const state = (history.state as { myBoard?: BoardStateDto }) || {};
     if (state.myBoard) {
       this.myBoardState = state.myBoard;
+      this.boardWidth = state.myBoard.width;
+      this.boardHeight = state.myBoard.height;
       this.buildMyBoardMaps();
     }
 
@@ -103,8 +137,13 @@ export class GameComponent implements OnInit, OnDestroy {
       this.gameCode = params.get('gameCode') ?? '';
       this.myPlayerId = params.get('playerId') ?? '';
       this.myPlayerName = params.get('playerName') ?? '';
-      if (this.gameCode && this.myPlayerId) this.loadGame();
-      else this.error = 'Fehlende Parameter.';
+      this.lobbyCode = params.get('lobbyCode') ?? '';
+
+      if (this.gameCode && this.myPlayerId) {
+        this.loadGame();
+      } else {
+        this.error = 'Fehlende Parameter.';
+      }
     });
   }
 
@@ -113,6 +152,7 @@ export class GameComponent implements OnInit, OnDestroy {
     this.eventSub?.unsubscribe();
     this.chatSub?.unsubscribe();
     this.stomp?.deactivate();
+    this.lobbySub?.unsubscribe();
   }
 
   private scrollChatToBottom() {
@@ -120,6 +160,15 @@ export class GameComponent implements OnInit, OnDestroy {
       const el = this.messagesEl?.nativeElement;
       if (el) el.scrollTop = el.scrollHeight;
     });
+  }
+
+  private applyShot(target: 'opponent' | 'me', x: number, y: number, result: string) {
+    const key = `${x},${y}`;
+    const map = target === 'opponent' ? this.myShotsOnOpponent : this.shotsOnMyBoard;
+
+    if (result === 'MISS') map.set(key, 'miss');
+    if (result === 'HIT') map.set(key, 'hit');
+    if (result === 'SUNK') map.set(key, 'sunk');
   }
 
   loadGame() {
@@ -143,6 +192,12 @@ export class GameComponent implements OnInit, OnDestroy {
         next: (g) => {
           this.game = g;
           this.readyDone = g.yourBoardLocked;
+
+          // Optional: falls Setup und kein Board, automatisch platzieren
+          if (g.status === 'SETUP' && !g.yourBoardLocked && !this.myBoardState) {
+            this.autoPlacement();
+          }
+
           this.connectWs();
           this.loadChatHistory();
           this.cdr.markForCheck();
@@ -188,6 +243,7 @@ export class GameComponent implements OnInit, OnDestroy {
     this.shotLoading = true;
     this.shotError = '';
 
+    this.lastShotSent = { x, y };
     this.http
       .post<ShotResultDto>(`${API_BASE_URL}/games/${this.gameCode}/shots`, {
         shooterId: this.myPlayerId,
@@ -196,6 +252,8 @@ export class GameComponent implements OnInit, OnDestroy {
       })
       .subscribe({
         next: (res) => {
+          this.applyShot('opponent', x, y, res.result);
+
           if (this.game) {
             this.game = { ...this.game, yourTurn: res.yourTurn };
           }
@@ -221,8 +279,21 @@ export class GameComponent implements OnInit, OnDestroy {
     return `${x},${y}`;
   }
 
+  cellStateForOpp(x: number, y: number): CellState {
+    const key = `${x},${y}`;
+    const v = this.myShotsOnOpponent.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
+    return 'empty';
+  }
+
   cellStateForMine(x: number, y: number): CellState {
     const key = `${x},${y}`;
+    const v = this.shotsOnMyBoard.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
     if (this.myShipCoords.has(key)) return 'ship';
     return 'empty';
   }
@@ -239,11 +310,21 @@ export class GameComponent implements OnInit, OnDestroy {
       this.zone.run(() => {
         this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
         this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+
+        if (this.lobbyCode) {
+          this.lobbySub = this.stomp!.subscribe(`/topic/lobbies/${this.lobbyCode}/events`, (msg) => {
+            const evt = JSON.parse(msg.body);
+            if (evt.type === 'LOBBY_FULL') {
+              this.loadGame();
+            }
+          });
+        }
       });
     };
 
     this.stomp.activate();
   }
+
 
   handleChat(msg: IMessage) {
     const dto = JSON.parse(msg.body) as ChatDto;
@@ -258,10 +339,25 @@ export class GameComponent implements OnInit, OnDestroy {
     const evt = JSON.parse(msg.body) as GameEventDto;
 
     this.zone.run(() => {
+      if (evt.type === 'SHOT_FIRED') {
+        const { x, y, result } = evt.payload || {};
+        if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
+          this.applyShot('me', x, y, result);
+        }
+        this.loadGame();
+        return;
+      }
+
+      if (evt.type === 'GAME_FORFEITED') {
+        const { forfeitingPlayerName } = evt.payload || {};
+        this.forfeitedByName = forfeitingPlayerName || '';
+        this.loadGame();
+        return;
+      }
+
       if ([
         'BOARD_CONFIRMED',
         'GAME_STARTED',
-        'SHOT_FIRED',
         'TURN_CHANGED',
         'GAME_FINISHED',
         'GAME_FORFEITED',
@@ -272,6 +368,9 @@ export class GameComponent implements OnInit, OnDestroy {
         return;
       }
     });
+
+
+
   }
 
   loadChatHistory() {
@@ -306,6 +405,8 @@ export class GameComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (state) => {
           this.myBoardState = state;
+          this.boardWidth = state.width;
+          this.boardHeight = state.height;
           this.buildMyBoardMaps();
           this.autoLoading = false;
           this.cdr.markForCheck();
@@ -349,5 +450,60 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
-  protected readonly Math = Math;
+  resumeGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+
+    this.http
+      .post<ResumeResponseDto>(`${API_BASE_URL}/games/${this.gameCode}/resume`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (res) => {
+          // Resume-Handshake UI
+          this.waitingForResume = res.status === 'WAITING';
+
+          if (res.snapshot) {
+            this.boardWidth = res.snapshot.boardWidth;
+            this.boardHeight = res.snapshot.boardHeight;
+
+            this.myBoardState = res.snapshot.yourBoard;
+            this.buildMyBoardMaps();
+
+            this.shotsOnMyBoard.clear();
+            this.myShotsOnOpponent.clear();
+
+            for (const s of res.snapshot.shotsOnYourBoard) {
+              this.applyShot('me', s.x, s.y, s.result);
+            }
+            for (const s of res.snapshot.yourShotsOnOpponent) {
+              this.applyShot('opponent', s.x, s.y, s.result);
+            }
+          }
+
+          // Nach Resume Status aktualisieren
+          this.loadGame();
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  pauseGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+    this.pauseLoading = true;
+
+    this.http
+      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/pause`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (g) => {
+          this.game = g;
+          this.pauseLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.pauseLoading = false;
+          this.cdr.markForCheck();
+        },
+      });
+  }
 }
