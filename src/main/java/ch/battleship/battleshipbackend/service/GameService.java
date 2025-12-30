@@ -125,6 +125,7 @@ public class GameService {
                 .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
 
         game.setStatus(GameStatus.PAUSED);
+        game.setResumeReadyPlayerId(null);
 
         Game saved = gameRepository.save(game);
 
@@ -136,30 +137,63 @@ public class GameService {
         return saved;
     }
 
-    public Game resumeGame(String gameCode, UUID requestedByPlayerId) {
+    public GameResumeResponseDto resumeGame(String gameCode, UUID requestedByPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
-
-        if (game.getStatus() != GameStatus.PAUSED) {
-            throw new IllegalStateException("Can only resume a PAUSED game");
-        }
 
         Player requestedBy = game.getPlayers().stream()
                 .filter(p -> Objects.equals(p.getId(), requestedByPlayerId))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
 
-        game.setStatus(GameStatus.RUNNING);
-
-        Game saved = gameRepository.save(game);
-
-        if (messagingTemplate != null) {
-            String destination = "/topic/games/" + gameCode + "/events";
-            messagingTemplate.convertAndSend(destination, GameEventDto.gameResumed(saved, requestedBy));
+        if (game.getStatus() == GameStatus.RUNNING) {
+            return new GameResumeResponseDto(
+                    game.getGameCode(),
+                    game.getStatus(),
+                    true,
+                    requestedBy.getUsername(),
+                    toSnapshot(game, requestedByPlayerId)
+            );
         }
 
-        return saved;
+        if (game.getStatus() == GameStatus.WAITING && game.getResumeReadyPlayerId() == null) {
+            throw new IllegalStateException("WAITING game cannot be resumed (not in resume-handshake)");
+        }
+
+        if (game.getStatus() != GameStatus.PAUSED && game.getStatus() != GameStatus.WAITING) {
+            throw new IllegalStateException("Can only resume a PAUSED/WAITING game");
+        }
+
+        UUID first = game.getResumeReadyPlayerId();
+
+        Game saved;
+        if (game.getStatus() == GameStatus.PAUSED) {
+            game.setStatus(GameStatus.WAITING);
+            game.setResumeReadyPlayerId(requestedByPlayerId);
+            saved = gameRepository.save(game);
+            sendEventWaiting(saved, requestedBy);
+        } else {
+            if (Objects.equals(first, requestedByPlayerId)) {
+                saved = game; // idempotent
+            } else {
+                game.setStatus(GameStatus.RUNNING);
+                game.setResumeReadyPlayerId(null);
+                saved = gameRepository.save(game);
+                sendEventResumed(saved, requestedBy);
+            }
+        }
+
+        boolean handshakeComplete = saved.getStatus() == GameStatus.RUNNING;
+
+        return new GameResumeResponseDto(
+                saved.getGameCode(),
+                saved.getStatus(),
+                handshakeComplete,
+                requestedBy.getUsername(),
+                toSnapshot(saved, requestedByPlayerId)
+        );
     }
+
 
     public Game forfeitGame(String gameCode, UUID forfeitingPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
@@ -428,6 +462,18 @@ public class GameService {
     }
 
     // ----------------- helpers -----------------
+    private void sendEventWaiting(Game game, Player requestedBy) {
+        if (messagingTemplate == null) return;
+        messagingTemplate.convertAndSend("/topic/games/" + game.getGameCode() + "/events",
+                GameEventDto.gameResumePending(game, requestedBy));
+    }
+
+    private void sendEventResumed(Game game, Player requestedBy) {
+        if (messagingTemplate == null) return;
+        messagingTemplate.convertAndSend("/topic/games/" + game.getGameCode() + "/events",
+                GameEventDto.gameResumed(game, requestedBy));
+    }
+
 
     private List<ShipType> parseFleetDefinition(GameConfiguration config) {
         String definition = config.getFleetDefinition();
@@ -666,6 +712,81 @@ public class GameService {
                 opponentBoardLocked,
                 yourTurn,
                 opponentName
+        );
+    }
+
+    private GameSnapshotDto toSnapshot(Game game, UUID viewerPlayerId) {
+        Player you = game.getPlayers().stream()
+                .filter(p -> p != null && p.getId() != null)
+                .filter(p -> Objects.equals(p.getId(), viewerPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + viewerPlayerId));
+
+        Player opponent = game.getPlayers().stream()
+                .filter(p -> p != null && p.getId() != null)
+                .filter(p -> !Objects.equals(p.getId(), viewerPlayerId))
+                .findFirst()
+                .orElse(null);
+
+        Map<UUID, Board> boardByOwnerId = new HashMap<>();
+        for (Board b : game.getBoards()) {
+            if (b == null || b.getOwner() == null || b.getOwner().getId() == null) continue;
+            boardByOwnerId.put(b.getOwner().getId(), b);
+        }
+
+        Board yourBoard = boardByOwnerId.get(viewerPlayerId);
+        Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
+
+        boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
+        boolean oppBoardLocked = oppBoard != null && oppBoard.isLocked();
+
+        boolean yourTurn = game.getStatus() == GameStatus.RUNNING
+                && game.getCurrentTurnPlayerId() != null
+                && Objects.equals(game.getCurrentTurnPlayerId(), viewerPlayerId);
+
+        List<Shot> allShots = game.getShots() == null ? List.of() : game.getShots();
+
+        BoardStateDto yourBoardDto = (yourBoard == null)
+                ? null
+                : new BoardStateDto(
+                yourBoard.getId(),
+                yourBoard.getWidth(),
+                yourBoard.getHeight(),
+                yourBoard.isLocked(),
+                yourBoard.getPlacements().stream().map(ShipPlacementDto::from).toList()
+        );
+
+        List<ShotViewDto> shotsOnYourBoard = (yourBoard == null)
+                ? List.of()
+                : allShots.stream()
+                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(yourBoard))
+                .map(ShotViewDto::from)
+                .toList();
+
+        List<ShotViewDto> yourShotsOnOpponent = (oppBoard == null)
+                ? List.of()
+                : allShots.stream()
+                .filter(s -> s.getShooter() != null && Objects.equals(s.getShooter().getId(), viewerPlayerId))
+                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(oppBoard))
+                .map(ShotViewDto::from)
+                .toList();
+
+        int w = game.getConfig().getBoardWidth();
+        int h = game.getConfig().getBoardHeight();
+
+        return new GameSnapshotDto(
+                game.getGameCode(),
+                game.getStatus(),
+                w,
+                h,
+                you.getUsername(),
+                opponent == null ? null : opponent.getUsername(),
+                yourBoardLocked,
+                oppBoardLocked,
+                yourTurn,
+                yourBoardDto,
+                shotsOnYourBoard,
+                yourShotsOnOpponent
         );
     }
 }

@@ -49,6 +49,9 @@ public class Game extends BaseEntity {
     @Column(name = "current_turn_player_id")
     private UUID currentTurnPlayerId;
 
+    @Column(name = "resume_ready_player_id")
+    private UUID resumeReadyPlayerId;
+
     @Column(name = "winner_player_id")
     private UUID winnerPlayerId;
 
