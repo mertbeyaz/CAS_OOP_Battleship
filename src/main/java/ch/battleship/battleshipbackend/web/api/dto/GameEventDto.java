@@ -104,6 +104,19 @@ public record GameEventDto(
                 )
         );
     }
+    //gameResumePending
+    public static GameEventDto gameResumePending(Game game, Player requestedBy) {
+        return new GameEventDto(
+                GameEventType.GAME_RESUME_PENDING,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "requestedByPlayerName", requestedBy.getUsername(),
+                        "resumeReadyCount", game.getResumeReadyPlayerId() != null ? 1 : 0
+                )
+        );
+    }
 
     public static GameEventDto gameResumed(Game game, Player requestedBy) {
         return new GameEventDto(

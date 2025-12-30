@@ -72,14 +72,14 @@ public class GameController {
 
     @Operation(summary = "Resume a paused game")
     @PostMapping("/{gameCode}/resume")
-    public ResponseEntity<GamePublicDto> resumeGame(@PathVariable String gameCode,
-                                                    @RequestBody PlayerActionRequest request) {
+    public ResponseEntity<GameResumeResponseDto> resumeGame(@PathVariable String gameCode,
+                                                            @RequestBody PlayerActionRequest request) {
         try {
-            gameService.resumeGame(gameCode, request.playerId());
-            return ResponseEntity.ok(gameService.getPublicState(gameCode, request.playerId()));
+            GameResumeResponseDto response = gameService.resumeGame(gameCode, request.playerId());
+            return ResponseEntity.ok(response);
         } catch (EntityNotFoundException e) {
             return ResponseEntity.notFound().build();
-        } catch (IllegalStateException e) {
+        } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().build();
         }
     }

@@ -8,6 +8,7 @@ public enum GameEventType
     GAME_FINISHED,
     GAME_PAUSED,
     GAME_RESUMED,
+    GAME_RESUME_PENDING,
     GAME_FORFEITED,
     SHOT_FIRED,
     TURN_CHANGED
