@@ -7,5 +7,6 @@ public record GameResumeResponseDto(
         GameStatus status,
         boolean handshakeComplete,        // status == RUNNING
         String requestedByPlayerName,
+        String currentTurnPlayerName,
         GameSnapshotDto snapshot
 ) {}
