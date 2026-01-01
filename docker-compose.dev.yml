@@ -48,14 +48,16 @@ services:
         condition: service_healthy
     labels:
       - traefik.enable=true
-      - traefik.http.routers.backend.rule=PathPrefix(`/api`)
+      - traefik.http.routers.backend.rule=PathPrefix(`/api`) || PathPrefix(`/swagger-ui`) || PathPrefix(`/v3/api-docs`)
       - traefik.http.routers.backend.entrypoints=web
       - traefik.http.services.backend.loadbalancer.server.port=8080
-      # /api -> /api/ (optional)
+
+      # optional: /api -> /api/
       - traefik.http.middlewares.api-redirect.redirectregex.regex=^/api$
       - traefik.http.middlewares.api-redirect.redirectregex.replacement=/api/
+      - traefik.http.middlewares.api-redirect.redirectregex.permanent=true
       - traefik.http.routers.backend.middlewares=api-redirect@docker
-
+      -
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin-dev
@@ -91,8 +93,8 @@ services:
       - backend
     labels:
       - traefik.enable=true
-      # Frontend get it all expect /api and /pgadmin
-      - traefik.http.routers.frontend.rule=PathPrefix(`/`) && !PathPrefix(`/api`) && !PathPrefix(`/pgadmin`)
+      # Frontend get it all expect /api, /swagger-ui and /pgadmin
+      - traefik.http.routers.frontend.rule=PathPrefix(`/`) && !PathPrefix(`/api`) && !PathPrefix(`/swagger-ui`) && !PathPrefix(`/v3/api-docs`) && !PathPrefix(`/pgadmin`)
       - traefik.http.routers.frontend.entrypoints=web
       - traefik.http.services.frontend.loadbalancer.server.port=80
       - traefik.http.routers.frontend.priority=1
