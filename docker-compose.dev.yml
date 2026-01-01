@@ -57,7 +57,7 @@ services:
       - traefik.http.middlewares.api-redirect.redirectregex.replacement=/api/
       - traefik.http.middlewares.api-redirect.redirectregex.permanent=true
       - traefik.http.routers.backend.middlewares=api-redirect@docker
-      -
+
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin-dev
