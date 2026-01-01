@@ -5,19 +5,48 @@ import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { API_BASE_URL } from '../app.config';
 
-type LobbyResponse = {
+type LobbyDto = {
   lobbyCode: string;
   gameCode: string;
   status: string;
   myPlayerId: string;
-  myBoardId: string;
-  players: Array<{ id: string; username: string; boardId: string | null }>;
+  myPlayerName: string;
+  myBoard?: {
+    boardId: string;
+    width: number;
+    height: number;
+    locked: boolean;
+    shipPlacements: Array<{
+      type: string;
+      startX: number;
+      startY: number;
+      orientation: 'HORIZONTAL' | 'VERTICAL';
+      size: number;
+    }>;
+  } | null;
 };
 
-type GameDto = {
+type JoinGameResponseDto = {
   gameCode: string;
-  players: Array<{ id: string; username: string }>;
-  boards: Array<{ id: string; width: number; height: number; ownerId: string; ownerUsername: string }>;
+  playerId: string;
+  playerName: string;
+  status: 'WAITING' | 'SETUP' | 'RUNNING' | 'PAUSED' | 'FINISHED';
+};
+
+type GamePublicDto = {
+  gameCode: string;
+  status: 'WAITING' | 'SETUP' | 'RUNNING' | 'PAUSED' | 'FINISHED';
+  yourBoardLocked: boolean;
+  opponentBoardLocked: boolean;
+  yourTurn: boolean;
+  opponentName: string | null;
+};
+
+type ResumeResponseDto = {
+  status: string;
+  snapshot?: {
+    youName?: string;
+  };
 };
 
 @Component({
@@ -40,6 +69,19 @@ export class LandingComponent {
   loadingJoin = false;
   errorJoin = '';
 
+  private playerKey(gameCode: string, username: string) {
+    return `battleship:${gameCode}:${username}`;
+  }
+
+  private savePlayer(gameCode: string, username: string, playerId: string, playerName: string) {
+    localStorage.setItem(this.playerKey(gameCode, username), JSON.stringify({ playerId, playerName }));
+  }
+
+  private loadPlayer(gameCode: string, username: string): { playerId: string; playerName: string } | null {
+    const raw = localStorage.getItem(this.playerKey(gameCode, username));
+    return raw ? JSON.parse(raw) : null;
+  }
+
   quickPlay() {
     const name = this.usernameQuick.trim();
     if (!name) {
@@ -50,16 +92,19 @@ export class LandingComponent {
     this.errorQuick = '';
 
     this.http
-      .post<LobbyResponse>(`${API_BASE_URL}/lobbies/auto-join`, { username: name })
+      .post<LobbyDto>(`${API_BASE_URL}/lobbies/auto-join`, { username: name })
       .subscribe({
         next: (res) => {
           this.loadingQuick = false;
+          this.savePlayer(res.gameCode, res.myPlayerName, res.myPlayerId, res.myPlayerName);
           this.router.navigate(['/game'], {
             queryParams: {
               gameCode: res.gameCode,
               playerId: res.myPlayerId,
-              boardId: res.myBoardId,
+              playerName: res.myPlayerName,
+              lobbyCode: res.lobbyCode,
             },
+            state: { myBoard: res.myBoard },
           });
         },
         error: () => {
@@ -71,37 +116,110 @@ export class LandingComponent {
 
   joinByCode() {
     const code = this.gameCode.trim();
-    const name = this.usernameJoin.trim();
-    if (!code || !name) {
+    const input = this.usernameJoin.trim();
+    if (!code || !input) {
       this.errorJoin = 'Bitte Game Code und Username eingeben.';
       return;
     }
     this.loadingJoin = true;
     this.errorJoin = '';
 
+    // 1) Wenn Input UUID → direkt resume
+    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (uuidRe.test(input)) {
+      this.http
+        .get<GamePublicDto>(`${API_BASE_URL}/games/${code}?playerId=${input}`)
+        .subscribe({
+          next: (g) => {
+            if (g.status !== 'PAUSED') {
+              this.loadingJoin = false;
+              this.errorJoin = 'Resume nur möglich, wenn Spiel PAUSED ist.';
+              return;
+            }
+
+            this.http
+              .post<ResumeResponseDto>(`${API_BASE_URL}/games/${code}/resume`, { playerId: input })
+              .subscribe({
+                next: (res) => {
+                  const nameFromResume = res.snapshot?.youName ?? input;
+                  this.loadingJoin = false;
+                  this.router.navigate(['/game'], {
+                    queryParams: { gameCode: code, playerId: input, playerName: nameFromResume },
+                  });
+                },
+                error: () => {
+                  this.loadingJoin = false;
+                  this.errorJoin = 'Resume fehlgeschlagen.';
+                },
+              });
+          },
+          error: () => {
+            this.loadingJoin = false;
+            this.errorJoin = 'Spiel konnte nicht geladen werden.';
+          },
+        });
+
+      return;
+    }
+
+
+    // 2) Falls Spieler bekannt (LocalStorage) → Status prüfen
+    const existing = this.loadPlayer(code, input);
+    if (existing) {
+      this.http
+        .get<GamePublicDto>(`${API_BASE_URL}/games/${code}?playerId=${existing.playerId}`)
+        .subscribe({
+          next: (g) => {
+            if (g.status === 'PAUSED') {
+              this.http
+                .post<GamePublicDto>(`${API_BASE_URL}/games/${code}/resume`, { playerId: existing.playerId })
+                .subscribe({
+                  next: () => {
+                    this.loadingJoin = false;
+                    this.router.navigate(['/game'], {
+                      queryParams: {
+                        gameCode: code,
+                        playerId: existing.playerId,
+                        playerName: existing.playerName,
+                      },
+                    });
+                  },
+                  error: () => {
+                    this.loadingJoin = false;
+                    this.errorJoin = 'Resume fehlgeschlagen.';
+                  },
+                });
+            } else {
+              this.loadingJoin = false;
+              this.router.navigate(['/game'], {
+                queryParams: {
+                  gameCode: code,
+                  playerId: existing.playerId,
+                  playerName: existing.playerName,
+                },
+              });
+            }
+          },
+          error: () => {
+            this.loadingJoin = false;
+            this.errorJoin = 'Spiel konnte nicht geladen werden.';
+          },
+        });
+      return;
+    }
+
+    // 3) Normaler Join
     this.http
-      .post<GameDto>(`${API_BASE_URL}/games/${code}/join`, { username: name })
+      .post<JoinGameResponseDto>(`${API_BASE_URL}/games/${code}/join`, { username: input })
       .subscribe({
         next: (res) => {
-          const me = res.players.find((p) => p.username === name);
-          if (!me) {
-            this.loadingJoin = false;
-            this.errorJoin = 'Player nicht gefunden.';
-            return;
-          }
-          const myBoard = res.boards.find((b) => b.ownerId === me.id);
-          if (!myBoard) {
-            this.loadingJoin = false;
-            this.errorJoin = 'Board nicht gefunden.';
-            return;
-          }
-
           this.loadingJoin = false;
+          this.savePlayer(res.gameCode, res.playerName, res.playerId, res.playerName);
           this.router.navigate(['/game'], {
             queryParams: {
               gameCode: res.gameCode,
-              playerId: me.id,
-              boardId: myBoard.id,
+              playerId: res.playerId,
+              playerName: res.playerName,
             },
           });
         },

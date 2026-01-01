@@ -12,38 +12,54 @@ import {
 import { NgIf, NgFor, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { catchError, finalize, throwError } from 'rxjs';
 import { Client, IMessage, StompSubscription } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { API_BASE_URL } from '../app.config';
 
-type GameDto = {
-  id: string;
+type GamePublicDto = {
   gameCode: string;
-  status: 'WAITING' | 'SETUP' | 'READY' | 'RUNNING' | 'PAUSED' | 'FINISHED';
-  boardWidth: number;
-  boardHeight: number;
-  currentTurnPlayerId: string | null;
-  winnerPlayerId: string | null;
-  players: Array<{ id: string; username: string }>;
-  boards: Array<{ id: string; width: number; height: number; ownerId: string; ownerUsername: string }>;
+  status: 'WAITING' | 'SETUP' | 'RUNNING' | 'PAUSED' | 'FINISHED';
+  yourBoardLocked: boolean;
+  opponentBoardLocked: boolean;
+  yourTurn: boolean;
+  opponentName: string | null;
 };
 
 type BoardStateDto = {
   boardId: string;
   width: number;
   height: number;
-  ownerId: string;
-  ownerUsername: string;
   locked: boolean;
-  ships: Array<{ type: string; startX: number; startY: number; orientation: 'HORIZONTAL' | 'VERTICAL'; size: number }>;
-  shotsOnThisBoard: Array<{ x: number; y: number; result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT' }>;
+  shipPlacements: Array<{ type: string; startX: number; startY: number; orientation: 'HORIZONTAL' | 'VERTICAL'; size: number }>;
 };
 
 type GameEventDto = {
   type: string;
   payload: Record<string, any>;
+};
+
+type ShotResultDto = {
+  result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT';
+  hit: boolean;
+  shipSunk: boolean;
+  yourTurn: boolean;
+};
+
+type ShotDto = { x: number; y: number; result: 'MISS' | 'HIT' | 'SUNK' | 'ALREADY_SHOT' };
+
+type GameSnapshotDto = {
+  boardWidth: number;
+  boardHeight: number;
+  yourBoard: BoardStateDto;
+  shotsOnYourBoard: ShotDto[];
+  yourShotsOnOpponent: ShotDto[];
+};
+
+type ResumeResponseDto = {
+  status: string;
+  snapshot?: GameSnapshotDto;
 };
 
 type ChatDto = { senderId: string; senderName: string; gameCode: string; message: string; timestamp: string };
@@ -60,6 +76,7 @@ type CellState = 'empty' | 'ship' | 'miss' | 'hit' | 'sunk';
 export class GameComponent implements OnInit, OnDestroy {
   private http = inject(HttpClient);
   private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private cdr = inject(ChangeDetectorRef);
   private zone = inject(NgZone);
 
@@ -67,59 +84,75 @@ export class GameComponent implements OnInit, OnDestroy {
 
   gameCode = '';
   myPlayerId = '';
-  myBoardId = '';
-  game?: GameDto;
-  readyPlayers = new Set<string>();
+  myPlayerName = '';
+  game?: GamePublicDto;
 
-  autoLoading = false; //autoPlacement
   loading = false;
   readyLoading = false;
   readyDone = false;
   shotLoading = false;
   error = '';
   shotError = '';
+  autoLoading = false;
+  forfeitLoading = false;
+  pauseLoading = false;
+  lobbyCode = '';
+  waitingForResume = false; // Due to hand-shake from the oppenent player
+  forfeitedByName = '';
+
+
+  // Board sizes (fixed to 10x10, can be overwritten by snapshot)
+  boardWidth = 10;
+  boardHeight = 10;
 
   myBoardState?: BoardStateDto;
-  opponentBoardState?: BoardStateDto;
-
   myShipCoords = new Set<string>();
-  myHits = new Map<string, CellState>();
-  myMisses = new Set<string>();
-  oppHits = new Map<string, CellState>();
-  oppMisses = new Set<string>();
-  forfeitLoading = false;
+
+  // Local shot history (no API available)
+  myShotsOnOpponent = new Map<string, 'hit' | 'sunk' | 'miss'>();
+  shotsOnMyBoard = new Map<string, 'hit' | 'sunk' | 'miss'>();
+
+  protected readonly Math = Math;
+  private lastShotSent?: { x: number; y: number };
 
   private stomp?: Client;
   private eventSub?: StompSubscription;
   private chatSub?: StompSubscription;
+  private lobbySub: any;
 
   chatMessages: ChatDto[] = [];
   chatInput = '';
 
-  get myBoard() {
-    return this.game?.boards.find((b) => b.id === this.myBoardId);
-  }
-  get opponentBoard() {
-    return this.game?.boards.find((b) => b.ownerId !== this.myPlayerId);
-  }
 
   ngOnInit(): void {
+    const state = (history.state as { myBoard?: BoardStateDto }) || {};
+    if (state.myBoard) {
+      this.myBoardState = state.myBoard;
+      this.boardWidth = state.myBoard.width;
+      this.boardHeight = state.myBoard.height;
+      this.buildMyBoardMaps();
+    }
+
     this.route.queryParamMap.subscribe((params) => {
       this.gameCode = params.get('gameCode') ?? '';
       this.myPlayerId = params.get('playerId') ?? '';
-      this.myBoardId = params.get('boardId') ?? '';
-      if (this.gameCode) {
+      this.myPlayerName = params.get('playerName') ?? '';
+      this.lobbyCode = params.get('lobbyCode') ?? '';
+
+      if (this.gameCode && this.myPlayerId) {
         this.loadGame();
       } else {
-        this.error = 'Fehlender gameCode.';
+        this.error = 'Fehlende Parameter.';
       }
     });
   }
+
 
   ngOnDestroy(): void {
     this.eventSub?.unsubscribe();
     this.chatSub?.unsubscribe();
     this.stomp?.deactivate();
+    this.lobbySub?.unsubscribe();
   }
 
   private scrollChatToBottom() {
@@ -129,11 +162,20 @@ export class GameComponent implements OnInit, OnDestroy {
     });
   }
 
+  private applyShot(target: 'opponent' | 'me', x: number, y: number, result: string) {
+    const key = `${x},${y}`;
+    const map = target === 'opponent' ? this.myShotsOnOpponent : this.shotsOnMyBoard;
+
+    if (result === 'MISS') map.set(key, 'miss');
+    if (result === 'HIT') map.set(key, 'hit');
+    if (result === 'SUNK') map.set(key, 'sunk');
+  }
+
   loadGame() {
     this.loading = true;
     this.error = '';
     this.http
-      .get<GameDto>(`${API_BASE_URL}/games/${this.gameCode}`)
+      .get<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}?playerId=${this.myPlayerId}`)
       .pipe(
         catchError((err: HttpErrorResponse) => {
           console.error('GET /games failed', err, 'body:', err.error);
@@ -149,73 +191,18 @@ export class GameComponent implements OnInit, OnDestroy {
       .subscribe({
         next: (g) => {
           this.game = g;
-          if (g.status === 'RUNNING') this.readyDone = true;
-          this.loadBoardStates();
-          this.loadChatHistory();
+          this.readyDone = g.yourBoardLocked;
+
+          // Optional: falls Setup und kein Board, automatisch platzieren
+          if (g.status === 'SETUP' && !g.yourBoardLocked && !this.myBoardState) {
+            this.autoPlacement();
+          }
+
           this.connectWs();
+          this.loadChatHistory();
           this.cdr.markForCheck();
         },
       });
-  }
-
-  loadBoardStates() {
-    if (this.myBoardId) this.fetchBoardState(this.myBoardId, true);
-    if (this.opponentBoard?.id) this.fetchBoardState(this.opponentBoard.id, false);
-  }
-
-  fetchBoardState(boardId: string, isMine: boolean) {
-    this.http.get<BoardStateDto>(`${API_BASE_URL}/games/${this.gameCode}/boards/${boardId}/state`)
-      .subscribe({
-        next: (state) => {
-          if (isMine) {
-            this.myBoardState = state;
-            this.buildMyBoardMaps();
-          } else {
-            this.opponentBoardState = state;
-            this.buildOpponentMaps();
-          }
-
-          if (state.locked) {
-            this.readyPlayers.add(state.ownerId);
-          } else {
-            this.readyPlayers.delete(state.ownerId);
-          }
-          this.cdr.markForCheck();
-        },
-      });
-  }
-
-  buildMyBoardMaps() {
-    if (!this.myBoardState) return;
-    this.myShipCoords.clear();
-    this.myHits.clear();
-    this.myMisses.clear();
-
-    for (const s of this.myBoardState.ships) {
-      for (let i = 0; i < s.size; i++) {
-        const x = s.orientation === 'HORIZONTAL' ? s.startX + i : s.startX;
-        const y = s.orientation === 'VERTICAL' ? s.startY + i : s.startY;
-        this.myShipCoords.add(`${x},${y}`);
-      }
-    }
-    for (const shot of this.myBoardState.shotsOnThisBoard) {
-      const key = `${shot.x},${shot.y}`;
-      if (shot.result === 'MISS') this.myMisses.add(key);
-      else if (shot.result === 'HIT') this.myHits.set(key, 'hit');
-      else if (shot.result === 'SUNK') this.myHits.set(key, 'sunk');
-    }
-  }
-
-  buildOpponentMaps() {
-    if (!this.opponentBoardState) return;
-    this.oppHits.clear();
-    this.oppMisses.clear();
-    for (const shot of this.opponentBoardState.shotsOnThisBoard) {
-      const key = `${shot.x},${shot.y}`;
-      if (shot.result === 'MISS') this.oppMisses.add(key);
-      else if (shot.result === 'HIT') this.oppHits.set(key, 'hit');
-      else if (shot.result === 'SUNK') this.oppHits.set(key, 'sunk');
-    }
   }
 
   isSetup() {
@@ -223,11 +210,11 @@ export class GameComponent implements OnInit, OnDestroy {
   }
 
   isMyTurn() {
-    return this.game?.status === 'RUNNING' && this.game?.currentTurnPlayerId === this.myPlayerId;
+    return this.game?.status === 'RUNNING' && this.game?.yourTurn;
   }
 
   canShoot() {
-    return !!this.opponentBoard && this.isMyTurn() && !this.shotLoading;
+    return this.isMyTurn() && !this.shotLoading;
   }
 
   markReady() {
@@ -235,11 +222,11 @@ export class GameComponent implements OnInit, OnDestroy {
     this.readyLoading = true;
     this.error = '';
     this.http
-      .post<GameDto>(`${API_BASE_URL}/games/${this.gameCode}/players/${this.myPlayerId}/board/confirm`, {})
+      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/players/${this.myPlayerId}/board/confirm`, {})
       .subscribe({
         next: (g) => {
           this.game = g;
-          this.readyDone = true;
+          this.readyDone = g.yourBoardLocked;
           this.readyLoading = false;
           this.cdr.markForCheck();
         },
@@ -252,19 +239,25 @@ export class GameComponent implements OnInit, OnDestroy {
   }
 
   fireShot(x: number, y: number) {
-    if (!this.opponentBoard || !this.canShoot()) return;
+    if (!this.canShoot()) return;
     this.shotLoading = true;
     this.shotError = '';
+
+    this.lastShotSent = { x, y };
     this.http
-      .post<GameDto>(
-        `${API_BASE_URL}/games/${this.gameCode}/boards/${this.opponentBoard.id}/shots`,
-        { shooterId: this.myPlayerId, x, y }
-      )
+      .post<ShotResultDto>(`${API_BASE_URL}/games/${this.gameCode}/shots`, {
+        shooterId: this.myPlayerId,
+        x,
+        y,
+      })
       .subscribe({
-        next: (g) => {
-          this.game = g;
+        next: (res) => {
+          this.applyShot('opponent', x, y, res.result);
+
+          if (this.game) {
+            this.game = { ...this.game, yourTurn: res.yourTurn };
+          }
           this.shotLoading = false;
-          this.loadBoardStates();
           this.cdr.markForCheck();
         },
         error: (err) => {
@@ -274,11 +267,6 @@ export class GameComponent implements OnInit, OnDestroy {
           this.cdr.markForCheck();
         },
       });
-  }
-
-  playerName(id: string | null) {
-    if (!id || !this.game) return '';
-    return this.game.players.find((p) => p.id === id)?.username ?? '';
   }
 
   cells(n: number) {
@@ -293,15 +281,19 @@ export class GameComponent implements OnInit, OnDestroy {
 
   cellStateForOpp(x: number, y: number): CellState {
     const key = `${x},${y}`;
-    if (this.oppHits.has(key)) return this.oppHits.get(key)!;
-    if (this.oppMisses.has(key)) return 'miss';
+    const v = this.myShotsOnOpponent.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
     return 'empty';
   }
 
   cellStateForMine(x: number, y: number): CellState {
     const key = `${x},${y}`;
-    if (this.myHits.has(key)) return this.myHits.get(key)!;
-    if (this.myMisses.has(key)) return 'miss';
+    const v = this.shotsOnMyBoard.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
     if (this.myShipCoords.has(key)) return 'ship';
     return 'empty';
   }
@@ -318,11 +310,21 @@ export class GameComponent implements OnInit, OnDestroy {
       this.zone.run(() => {
         this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
         this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+
+        if (this.lobbyCode) {
+          this.lobbySub = this.stomp!.subscribe(`/topic/lobbies/${this.lobbyCode}/events`, (msg) => {
+            const evt = JSON.parse(msg.body);
+            if (evt.type === 'LOBBY_FULL') {
+              this.loadGame();
+            }
+          });
+        }
       });
     };
 
     this.stomp.activate();
   }
+
 
   handleChat(msg: IMessage) {
     const dto = JSON.parse(msg.body) as ChatDto;
@@ -337,74 +339,39 @@ export class GameComponent implements OnInit, OnDestroy {
     const evt = JSON.parse(msg.body) as GameEventDto;
 
     this.zone.run(() => {
-      if (evt.type === 'BOARD_CONFIRMED') {
-        this.loadBoardStates();
-        this.cdr.markForCheck();
-        return;
-      }
-
-      if (evt.type === 'GAME_STARTED') {
+      if (evt.type === 'SHOT_FIRED') {
+        const { x, y, result } = evt.payload || {};
+        if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
+          this.applyShot('me', x, y, result);
+        }
         this.loadGame();
         return;
       }
 
-      if (evt.type === 'SHOT_FIRED') {
-        const { currentTurnPlayerId } = evt.payload || {};
-        if (this.game && currentTurnPlayerId) {
-          this.game = { ...this.game, currentTurnPlayerId };
-        }
-        this.loadBoardStates();
-        this.cdr.markForCheck();
-        return;
-      }
-
-      if (evt.type === 'TURN_CHANGED') {
-        const { currentTurnPlayerId } = evt.payload || {};
-        if (this.game && currentTurnPlayerId) {
-          this.game = { ...this.game, currentTurnPlayerId };
-          this.cdr.markForCheck();
-      }
-        return;
-      }
-
-      if (evt.type === 'GAME_FINISHED') {
-        const { winnerPlayerId } = evt.payload || {};
-        if (this.game) {
-          this.game = {
-            ...this.game,
-            status: 'FINISHED',
-            winnerPlayerId: winnerPlayerId ?? this.game.winnerPlayerId,
-          };
-          this.cdr.markForCheck();
-        }
-        return;
-      }
-
-      if (evt.type === 'GAME_FINISHED') {
-        const { winnerPlayerId } = evt.payload || {};
-        if (this.game) {
-          this.game = {
-            ...this.game,
-            status: 'FINISHED',
-            winnerPlayerId: winnerPlayerId ?? this.game.winnerPlayerId,
-          };
-          this.cdr.markForCheck();
-        }
-        return;
-      }
-
       if (evt.type === 'GAME_FORFEITED') {
-        const { winnerPlayerId } = evt.payload || {};
-        if (this.game) {
-          this.game = { ...this.game, status: 'FINISHED', winnerPlayerId };
-          this.cdr.markForCheck();
-        }
+        const { forfeitingPlayerName } = evt.payload || {};
+        this.forfeitedByName = forfeitingPlayerName || '';
+        this.loadGame();
         return;
       }
 
+      if ([
+        'BOARD_CONFIRMED',
+        'GAME_STARTED',
+        'TURN_CHANGED',
+        'GAME_FINISHED',
+        'GAME_FORFEITED',
+        'GAME_PAUSED',
+        'GAME_RESUMED'
+      ].includes(evt.type)) {
+        this.loadGame();
+        return;
+      }
     });
-  }
 
+
+
+  }
 
   loadChatHistory() {
     this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
@@ -418,12 +385,11 @@ export class GameComponent implements OnInit, OnDestroy {
 
   sendChat() {
     if (!this.chatInput.trim()) return;
-    console.log('publish chat', this.chatInput, 'connected?', this.stomp?.connected);
     this.stomp?.publish({
       destination: `/app/games/${this.gameCode}/chat`,
       body: JSON.stringify({
         senderId: this.myPlayerId,
-        senderName: this.playerName(this.myPlayerId),
+        senderName: this.myPlayerName,
         message: this.chatInput.trim(),
       }),
     });
@@ -435,13 +401,12 @@ export class GameComponent implements OnInit, OnDestroy {
     this.autoLoading = true;
 
     this.http
-      .post<BoardStateDto>(
-        `${API_BASE_URL}/games/${this.gameCode}/players/${this.myPlayerId}/board/reroll`,
-        {}
-      )
+      .post<BoardStateDto>(`${API_BASE_URL}/games/${this.gameCode}/players/${this.myPlayerId}/board/reroll`, {})
       .subscribe({
         next: (state) => {
           this.myBoardState = state;
+          this.boardWidth = state.width;
+          this.boardHeight = state.height;
           this.buildMyBoardMaps();
           this.autoLoading = false;
           this.cdr.markForCheck();
@@ -453,12 +418,25 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
+  buildMyBoardMaps() {
+    if (!this.myBoardState) return;
+    this.myShipCoords.clear();
+
+    for (const s of this.myBoardState.shipPlacements) {
+      for (let i = 0; i < s.size; i++) {
+        const x = s.orientation === 'HORIZONTAL' ? s.startX + i : s.startX;
+        const y = s.orientation === 'VERTICAL' ? s.startY + i : s.startY;
+        this.myShipCoords.add(`${x},${y}`);
+      }
+    }
+  }
+
   forfeitGame() {
     if (!this.gameCode || !this.myPlayerId) return;
     this.forfeitLoading = true;
 
     this.http
-      .post<GameDto>(`${API_BASE_URL}/games/${this.gameCode}/forfeit`, { playerId: this.myPlayerId })
+      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/forfeit`, { playerId: this.myPlayerId })
       .subscribe({
         next: (g) => {
           this.game = g;
@@ -472,5 +450,60 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
-  protected readonly Math = Math;
+  resumeGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+
+    this.http
+      .post<ResumeResponseDto>(`${API_BASE_URL}/games/${this.gameCode}/resume`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (res) => {
+          // Resume-Handshake UI
+          this.waitingForResume = res.status === 'WAITING';
+
+          if (res.snapshot) {
+            this.boardWidth = res.snapshot.boardWidth;
+            this.boardHeight = res.snapshot.boardHeight;
+
+            this.myBoardState = res.snapshot.yourBoard;
+            this.buildMyBoardMaps();
+
+            this.shotsOnMyBoard.clear();
+            this.myShotsOnOpponent.clear();
+
+            for (const s of res.snapshot.shotsOnYourBoard) {
+              this.applyShot('me', s.x, s.y, s.result);
+            }
+            for (const s of res.snapshot.yourShotsOnOpponent) {
+              this.applyShot('opponent', s.x, s.y, s.result);
+            }
+          }
+
+          // Nach Resume Status aktualisieren
+          this.loadGame();
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  pauseGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+    this.pauseLoading = true;
+
+    this.http
+      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/pause`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (g) => {
+          this.game = g;
+          this.pauseLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.pauseLoading = false;
+          this.cdr.markForCheck();
+        },
+      });
+  }
 }

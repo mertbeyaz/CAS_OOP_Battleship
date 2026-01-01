@@ -14,15 +14,21 @@
           <p class="label">Game Code</p>
           <p class="value">{{ game.gameCode }}</p>
         </div>
+        <div *ngIf="game.status === 'WAITING' && waitingForResume" class="pill warn">
+          Resume gedrückt – warte auf Gegner...
+        </div>
         <div>
           <p class="label">Status</p>
           <p class="value">{{ game.status }}</p>
         </div>
-        <div *ngIf="game.status === 'RUNNING' && game.currentTurnPlayerId" class="pill success">
-          Am Zug: {{ playerName(game.currentTurnPlayerId) }}
+        <div *ngIf="game.status === 'RUNNING'" class="pill success">
+          Am Zug: {{ game.yourTurn ? myPlayerName : (game.opponentName || 'Gegner') }}
         </div>
-        <div *ngIf="game.status === 'FINISHED' && game.winnerPlayerId" class="pill warn">
-          Gewinner: {{ playerName(game.winnerPlayerId) }}
+        <div *ngIf="forfeitedByName" class="pill warn">
+          Aufgegeben: {{ forfeitedByName }}
+        </div>
+        <div *ngIf="game.status === 'FINISHED'" class="pill warn">
+          Spiel beendet
         </div>
       </header>
 
@@ -36,60 +42,71 @@
           </tr>
           </thead>
           <tbody>
-          <tr *ngFor="let p of game.players">
+          <tr>
             <td>
-              {{ p.username }}
-              <span *ngIf="p.id === myPlayerId" class="tag">(du)</span>
+              {{ myPlayerName }} <span class="tag">(du)</span>
+              <span class="uuid" title="Diese ID wird benötigt, um ein pausiertes Spiel später wieder aufzunehmen.">
+                ({{ myPlayerId }})
+              </span>
             </td>
-            <td>{{ readyPlayers.has(p.id) ? 'Ready' : 'Wartet...' }}</td>
+            <td>{{ game.yourBoardLocked ? 'Ready' : 'Wartet...' }}</td>
             <td>
-              <ng-container *ngIf="p.id === myPlayerId">
-                <button (click)="markReady()" [disabled]="!isSetup() || readyLoading || readyDone">
-                  {{ readyDone ? 'Ready' : 'Ready werden' }}
-                </button>
-                <button (click)="autoPlacement()" [disabled]="!isSetup() || readyDone || autoLoading">
-                  Autoplacement
-                </button>
-                <button class="forfeit" (click)="forfeitGame()" [disabled]="forfeitLoading || game?.status === 'FINISHED'">
-                  Aufgeben
-                </button>
-              </ng-container>
+              <button (click)="markReady()" [disabled]="!isSetup() || readyLoading || readyDone">
+                {{ readyDone ? 'Ready' : 'Ready werden' }}
+              </button>
+              <button (click)="autoPlacement()" [disabled]="!isSetup() || readyDone || autoLoading">
+                Autoplacement
+              </button>
+              <button (click)="pauseGame()" [disabled]="game.status !== 'RUNNING' || pauseLoading">
+                Pause
+              </button>
+              <button (click)="resumeGame()" [disabled]="game.status !== 'PAUSED'">
+                Resume
+              </button>
+              <button class="forfeit" (click)="forfeitGame()" [disabled]="forfeitLoading || game.status === 'FINISHED'">
+                Aufgeben
+              </button>
             </td>
+          </tr>
+          <tr>
+            <td>{{ game.opponentName || 'Gegner' }}</td>
+            <td>{{ game.opponentBoardLocked ? 'Ready' : 'Wartet...' }}</td>
+            <td></td>
           </tr>
           </tbody>
         </table>
       </section>
 
       <section class="boards-grid">
-        <div class="panel board" *ngIf="myBoard">
+        <div class="panel board">
           <div class="panel-head">
             <h3>Dein Board</h3>
           </div>
-          <div class="grid" [style.--w]="myBoard.width" [style.--h]="myBoard.height">
+          <div class="grid" [style.--w]="boardWidth" [style.--h]="boardHeight">
             <span
               class="cell"
-              *ngFor="let _ of cells(myBoard.width * myBoard.height); let i = index"
-              [ngClass]="cellStateForMine(i % myBoard.width, Math.floor(i / myBoard.width))"
+              *ngFor="let _ of cells(boardWidth * boardHeight); let i = index"
+              [ngClass]="cellStateForMine(i % boardWidth, Math.floor(i / boardWidth))"
             >
-              {{ cellLabel(i, myBoard.width) }}
+              {{ cellLabel(i, boardWidth) }}
             </span>
           </div>
         </div>
 
-        <div class="panel board" *ngIf="opponentBoard">
+        <div class="panel board">
           <div class="panel-head">
             <h3>Gegner-Board</h3>
           </div>
-          <div class="grid" [style.--w]="opponentBoard.width" [style.--h]="opponentBoard.height">
+          <div class="grid" [style.--w]="boardWidth" [style.--h]="boardHeight">
             <span
               class="cell"
-              *ngFor="let _ of cells(opponentBoard.width * opponentBoard.height); let i = index"
-              [ngClass]="cellStateForOpp(i % opponentBoard.width, Math.floor(i / opponentBoard.width))"
+              *ngFor="let _ of cells(boardWidth * boardHeight); let i = index"
+              [ngClass]="cellStateForOpp(i % boardWidth, Math.floor(i / boardWidth))"
               [class.clickable]="canShoot()"
               [class.disabled]="!canShoot()"
-              (click)="canShoot() && fireShot(i % opponentBoard.width, Math.floor(i / opponentBoard.width))"
+              (click)="canShoot() && fireShot(i % boardWidth, Math.floor(i / boardWidth))"
             >
-              {{ cellLabel(i, opponentBoard.width) }}
+              {{ cellLabel(i, boardWidth) }}
             </span>
           </div>
           <p *ngIf="shotError" class="error">{{ shotError }}</p>
@@ -99,7 +116,9 @@
           <div class="panel-head"><h3>Chat</h3></div>
           <div class="messages" #messagesContainer>
             <div class="message" *ngFor="let m of chatMessages" [class.me]="m.senderId === myPlayerId">
-              <span class="name">{{ m.senderName || playerName(m.senderId) || m.senderId }}</span>
+              <span class="name">
+                {{ m.senderName || (m.senderId === myPlayerId ? myPlayerName : (game.opponentName || 'Gegner')) }}
+              </span>
               <span class="text">{{ m.message }}</span>
             </div>
           </div>
