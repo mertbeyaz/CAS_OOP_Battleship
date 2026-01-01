@@ -1,4 +1,20 @@
 services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik-dev
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      # Optional for debugging purpose only
+      - --api.dashboard=true
+      - --api.insecure=true
+    ports:
+      - "80:80"
+      - "8081:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   postgres:
     image: postgres:18-alpine
     container_name: postgres-dev
@@ -7,6 +23,7 @@ services:
       POSTGRES_USER: appsvc
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
+      # optional, direct access from outside
       - "5432:5432"
     volumes:
       - pg_dev_data:/var/lib/postgresql
@@ -19,18 +36,67 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.backend.dev
     container_name: battleship-backend-dev
     environment:
       SPRING_PROFILES_ACTIVE: dev
-      SPRING_DATASOURCE_URL: jdbc:postgresql://192.168.1.158:5432/battleship
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/battleship
       SPRING_DATASOURCE_USERNAME: appsvc
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.backend.rule=PathPrefix(`/api`)
+      - traefik.http.routers.backend.entrypoints=web
+      - traefik.http.services.backend.loadbalancer.server.port=8080
+      # /api -> /api/ (optional)
+      - traefik.http.middlewares.api-redirect.redirectregex.regex=^/api$
+      - traefik.http.middlewares.api-redirect.redirectregex.replacement=/api/
+      - traefik.http.routers.backend.middlewares=api-redirect@docker
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin-dev
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      # Important for Subpath-operation:
+      SCRIPT_NAME: "/pgadmin"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.pgadmin.rule=PathPrefix(`/pgadmin`)
+      - traefik.http.routers.pgadmin.entrypoints=web
+      - traefik.http.routers.pgadmin.priority=100
+      - traefik.http.services.pgadmin.loadbalancer.server.port=80
+
+      # Redirect /pgadmin and /pgadmin/ -> /pgadmin/browser/
+      - traefik.http.middlewares.pgadmin-home.redirectregex.regex=^/pgadmin/?$
+      - traefik.http.middlewares.pgadmin-home.redirectregex.replacement=/pgadmin/browser/
+      - traefik.http.routers.pgadmin.middlewares=pgadmin-home@docker
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.dev
+    container_name: battleship-frontend-dev
+    depends_on:
+      - backend
+    labels:
+      - traefik.enable=true
+      # Frontend get it all expect /api and /pgadmin
+      - traefik.http.routers.frontend.rule=PathPrefix(`/`) && !PathPrefix(`/api`) && !PathPrefix(`/pgadmin`)
+      - traefik.http.routers.frontend.entrypoints=web
+      - traefik.http.services.frontend.loadbalancer.server.port=80
+      - traefik.http.routers.frontend.priority=1
 
 volumes:
   pg_dev_data:
+  pgadmin_data:
