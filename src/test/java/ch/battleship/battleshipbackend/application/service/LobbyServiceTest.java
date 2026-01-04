@@ -1,11 +1,11 @@
 package ch.battleship.battleshipbackend.application.service;
 
 import ch.battleship.battleshipbackend.domain.Game;
+import ch.battleship.battleshipbackend.domain.GameConfiguration;
 import ch.battleship.battleshipbackend.domain.Lobby;
 import ch.battleship.battleshipbackend.domain.Player;
 import ch.battleship.battleshipbackend.domain.enums.LobbyEventType;
 import ch.battleship.battleshipbackend.domain.enums.LobbyStatus;
-import ch.battleship.battleshipbackend.domain.GameConfiguration;
 import ch.battleship.battleshipbackend.repository.LobbyRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.service.LobbyService;
@@ -21,9 +21,36 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit tests for {@link LobbyService}.
+ *
+ * <p><b>Scope:</b>
+ * <ul>
+ *   <li>Business behavior of "auto-join": join the oldest {@link LobbyStatus#WAITING} lobby if present,
+ *       otherwise create a new lobby + game.</li>
+ *   <li>State transitions on lobby level: WAITING -> FULL when the second player joins.</li>
+ *   <li>WebSocket notifications: when lobby becomes FULL, a {@link LobbyEventType#LOBBY_FULL} event is
+ *       published to the lobby-specific topic.</li>
+ * </ul>
+ *
+ * <p><b>Collaborators mocked:</b>
+ * <ul>
+ *   <li>{@link LobbyRepository} for persistence / lookup</li>
+ *   <li>{@link GameService} for joining/creating games</li>
+ *   <li>{@link SimpMessagingTemplate} for WS broadcasting</li>
+ * </ul>
+ *
+ * <p><b>Notes:</b>
+ * <ul>
+ *   <li>These tests intentionally do not assert on internal DB IDs. They focus on
+ *       state transitions and outbound events.</li>
+ *   <li>For WebSocket events we use a matcher to validate the DTO contents, while still allowing
+ *       the controller/service to create the DTO instance internally.</li>
+ * </ul>
+ */
 @ExtendWith(MockitoExtension.class)
 class LobbyServiceTest {
 
@@ -33,12 +60,27 @@ class LobbyServiceTest {
     @Mock
     private GameService gameService;
 
+    @Mock
+    private SimpMessagingTemplate messagingTemplate;
+
     @InjectMocks
     private LobbyService lobbyService;
 
-    @Mock
-    SimpMessagingTemplate messagingTemplate;
-
+    /**
+     * Scenario: A WAITING lobby exists.
+     * When a second player joins via {@link LobbyService#joinOrCreateLobby(String)},
+     * the lobby must become FULL and be saved.
+     *
+     * <p>This test verifies:</p>
+     * <ul>
+     *   <li>Lookup of an existing WAITING lobby.</li>
+     *   <li>Delegation to {@link GameService#joinGame(String, String)}.</li>
+     *   <li>Lobby state update to {@link LobbyStatus#FULL} when the game has 2 players.</li>
+     * </ul>
+     *
+     * <p><b>Note:</b> The WS notification is validated more explicitly in
+     * {@link #joinOrCreateLobby_whenSecondPlayerJoins_shouldMarkLobbyFullAndNotify()}.</p>
+     */
     @Test
     void joinOrCreateLobby_shouldJoinExistingWaitingLobby_andMarkFullWhenTwoPlayers() {
         // Arrange
@@ -46,6 +88,7 @@ class LobbyServiceTest {
 
         GameConfiguration config = GameConfiguration.defaultConfig();
         Game game = new Game(config);
+
         Player player1 = new Player("Player1");
         game.addPlayer(player1);
 
@@ -55,9 +98,10 @@ class LobbyServiceTest {
         when(lobbyRepository.findFirstByStatusOrderByCreatedAtAsc(LobbyStatus.WAITING))
                 .thenReturn(Optional.of(lobby));
 
-        // joinGame fügt Player2 hinzu und gibt das aktualisierte Game zurück
+        // Simulate that joinGame returns a game that now contains two players
         Player player2 = new Player(username);
         game.addPlayer(player2);
+
         when(gameService.joinGame(game.getGameCode(), username)).thenReturn(game);
 
         // Act
@@ -66,11 +110,17 @@ class LobbyServiceTest {
         // Assert
         assertThat(result).isSameAs(lobby);
         assertThat(result.getStatus()).isEqualTo(LobbyStatus.FULL);
+
         verify(lobbyRepository).save(lobby);
         verify(gameService).joinGame(game.getGameCode(), username);
         verifyNoMoreInteractions(gameService);
     }
 
+    /**
+     * Scenario: No WAITING lobby exists.
+     * When a user calls {@link LobbyService#joinOrCreateLobby(String)},
+     * the service must create a new game and a new lobby, and persist the lobby.
+     */
     @Test
     void joinOrCreateLobby_shouldCreateNewLobbyAndGameWhenNoneExists() {
         // Arrange
@@ -81,6 +131,7 @@ class LobbyServiceTest {
 
         GameConfiguration config = GameConfiguration.defaultConfig();
         Game game = new Game(config);
+
         Player player = new Player(username);
         game.addPlayer(player);
 
@@ -94,10 +145,25 @@ class LobbyServiceTest {
 
         // Assert
         assertThat(result).isSameAs(persistedLobby);
+
         verify(gameService).createGameAndJoinFirstPlayer(username);
         verify(lobbyRepository).save(any(Lobby.class));
     }
 
+    /**
+     * Scenario: A second player joins an existing WAITING lobby.
+     * The lobby must become FULL and a WebSocket event must be published to:
+     *
+     * <pre>{@code /topic/lobbies/{lobbyCode}/events}</pre>
+     *
+     * <p>The event must be a {@link LobbyEventType#LOBBY_FULL} DTO and contain:</p>
+     * <ul>
+     *   <li>lobbyCode</li>
+     *   <li>gameCode</li>
+     *   <li>status = "FULL"</li>
+     *   <li>joinedUsername = joiningUsername</li>
+     * </ul>
+     */
     @Test
     void joinOrCreateLobby_whenSecondPlayerJoins_shouldMarkLobbyFullAndNotify() {
         // Arrange
@@ -107,6 +173,8 @@ class LobbyServiceTest {
 
         GameConfiguration config = GameConfiguration.defaultConfig();
         Game game = new Game(gameCode, config);
+
+        // Game already has 2 players after joinGame(...) (service uses players.size() >= 2)
         game.addPlayer(new Player("Player1"));
         game.addPlayer(new Player(joiningUsername));
 
@@ -118,26 +186,40 @@ class LobbyServiceTest {
 
         when(gameService.joinGame(gameCode, joiningUsername)).thenReturn(game);
 
+        // Make repository save return the same lobby instance
         when(lobbyRepository.save(any(Lobby.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // Act
         Lobby result = lobbyService.joinOrCreateLobby(joiningUsername);
 
-        // Assert
+        // Assert: lobby FULL persisted
         assertThat(result.getStatus()).isEqualTo(LobbyStatus.FULL);
         verify(lobbyRepository).save(lobby);
 
+        // Assert: WebSocket publish
         String destination = "/topic/lobbies/" + lobbyCode + "/events";
 
-        verify(messagingTemplate).convertAndSend(eq(destination), argThat(matchesLobbyFullEvent(
-                lobbyCode, gameCode, joiningUsername
-        )));
+        verify(messagingTemplate).convertAndSend(
+                eq(destination),
+                argThat(matchesLobbyFullEvent(lobbyCode, gameCode, joiningUsername))
+        );
 
         verifyNoMoreInteractions(messagingTemplate);
     }
 
+    /**
+     * Argument matcher to validate that a published {@link LobbyEventDto} represents a lobby-full event
+     * for a given lobby/game and the joining user.
+     *
+     * @param lobbyCode        expected lobby code
+     * @param gameCode         expected game code
+     * @param joiningUsername  expected username of the player who triggered the FULL state
+     * @return matcher for {@link LobbyEventDto}
+     */
     private static ArgumentMatcher<LobbyEventDto> matchesLobbyFullEvent(
-            String lobbyCode, String gameCode, String joiningUsername
+            String lobbyCode,
+            String gameCode,
+            String joiningUsername
     ) {
         return dto ->
                 dto != null

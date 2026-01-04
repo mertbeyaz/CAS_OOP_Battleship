@@ -19,10 +19,23 @@ import java.util.UUID;
 import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit tests for {@link ChatWebSocketController}.
+ *
+ * <p>Focus:
+ * <ul>
+ *   <li>Valid sender -> message is persisted and broadcast to the game chat topic</li>
+ *   <li>Invalid sender -> request is rejected and nothing is broadcast</li>
+ * </ul>
+ *
+ * <p>Note:
+ * The controller operates in-memory on the loaded {@link Game} aggregate and persists it via {@link GameRepository}.
+ * WebSocket output is verified via {@link SimpMessagingTemplate}.
+ */
 @ExtendWith(MockitoExtension.class)
 class ChatControllerWebSocketTest {
 
@@ -37,13 +50,15 @@ class ChatControllerWebSocketTest {
 
     @Test
     void handleChatMessage_shouldBroadcastToTopic_whenSenderIsValid() {
+        // Arrange
         String gameCode = "TEST-CODE";
         Game game = new Game(gameCode, GameConfiguration.defaultConfig());
-        Player player = new Player("Attacker");
-        game.addPlayer(player);
 
+        Player player = new Player("Attacker");
         UUID senderId = UUID.randomUUID();
-        setId(player, senderId); // Spieler bekommt eine ID, wie aus der DB
+        setId(player, senderId); // simulate DB-assigned id
+
+        game.addPlayer(player);
 
         when(gameRepository.findByGameCode(gameCode)).thenReturn(Optional.of(game));
 
@@ -71,11 +86,11 @@ class ChatControllerWebSocketTest {
         String gameCode = "TEST-CODE";
         Game game = new Game(gameCode, GameConfiguration.defaultConfig());
 
-        // Game hat KEINE Spieler oder zumindest keinen mit der gesendeten ID
+        // Game contains a player, but not the sender id used in the message.
         Player existingPlayer = new Player("Existing");
         game.addPlayer(existingPlayer);
 
-        UUID unknownSenderId = UUID.randomUUID(); // gehört NICHT zu existingPlayer
+        UUID unknownSenderId = UUID.randomUUID();
 
         when(gameRepository.findByGameCode(gameCode)).thenReturn(Optional.of(game));
 
@@ -91,12 +106,10 @@ class ChatControllerWebSocketTest {
         // Assert
         assertThat(ex.getMessage()).isEqualTo("Sender does not belong to this game");
 
-        // Game wurde zwar geladen...
         verify(gameRepository).findByGameCode(gameCode);
-        // ...aber nicht gespeichert
         verifyNoMoreInteractions(gameRepository);
 
-        // Kein WebSocket-Event wurde gesendet
+        // No broadcast and no persistence update should happen on invalid sender.
         verifyNoInteractions(messagingTemplate);
     }
 }

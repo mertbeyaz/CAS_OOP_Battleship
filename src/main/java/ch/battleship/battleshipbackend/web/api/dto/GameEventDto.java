@@ -10,6 +10,30 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * WebSocket event DTO used to notify clients about game state changes.
+ *
+ * <p>This DTO is published to a game-specific topic (e.g. {@code /topic/games/{gameCode}/events})
+ * and contains:
+ * <ul>
+ *   <li>an event {@link GameEventType} (what happened)</li>
+ *   <li>the affected {@code gameCode}</li>
+ *   <li>the current {@link GameStatus} at the time of the event</li>
+ *   <li>a timestamp</li>
+ *   <li>a flexible payload map with event-specific fields</li>
+ * </ul>
+ *
+ * <p>Design note:
+ * The payload is modeled as {@code Map<String, Object>} to keep the WebSocket protocol lightweight
+ * and to allow different event types to carry different data. The tradeoff is less compile-time
+ * type safety compared to dedicated payload DTOs per event type.
+ *
+ * @param type event type
+ * @param gameCode affected game identifier
+ * @param gameStatus game status at event emission time
+ * @param timeStamp event timestamp
+ * @param payload event-specific data
+ */
 public record GameEventDto(
         GameEventType type,
         String gameCode,
@@ -17,6 +41,14 @@ public record GameEventDto(
         Instant timeStamp,
         Map<String, Object> payload
 ) {
+
+    /**
+     * Creates an event indicating that a player confirmed (locked) their board.
+     *
+     * @param game game instance
+     * @param player confirming player
+     * @return event DTO
+     */
     public static GameEventDto boardConfirmed(Game game, Player player) {
         return new GameEventDto(
                 GameEventType.BOARD_CONFIRMED,
@@ -29,6 +61,13 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that a player re-rolled their board (auto placement).
+     *
+     * @param game game instance
+     * @param player player who re-rolled the board
+     * @return event DTO
+     */
     public static GameEventDto boardRerolled(Game game, Player player) {
         return new GameEventDto(
                 GameEventType.BOARD_REROLLED,
@@ -41,7 +80,14 @@ public record GameEventDto(
         );
     }
 
-    public static GameEventDto gameStarted(Game game,Player currentTurnPlayer) {
+    /**
+     * Creates an event indicating that the game started and whose turn it is first.
+     *
+     * @param game game instance
+     * @param currentTurnPlayer player who starts
+     * @return event DTO
+     */
+    public static GameEventDto gameStarted(Game game, Player currentTurnPlayer) {
         return new GameEventDto(
                 GameEventType.GAME_STARTED,
                 game.getGameCode(),
@@ -53,6 +99,14 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that the turn has changed.
+     *
+     * @param game game instance
+     * @param currentTurnPlayer player who now has the turn
+     * @param lastShotResult result of the last shot (useful for UI/UX feedback)
+     * @return event DTO
+     */
     public static GameEventDto turnChanged(Game game, Player currentTurnPlayer, ShotResult lastShotResult) {
         return new GameEventDto(
                 GameEventType.TURN_CHANGED,
@@ -66,6 +120,17 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that a shot has been fired.
+     *
+     * @param game game instance
+     * @param attacker player who fired the shot
+     * @param defender player whose board was targeted
+     * @param x x-coordinate (0-based)
+     * @param y y-coordinate (0-based)
+     * @param result shot result
+     * @return event DTO
+     */
     public static GameEventDto shotFired(Game game, Player attacker, Player defender, int x, int y, ShotResult result) {
         return new GameEventDto(
                 GameEventType.SHOT_FIRED,
@@ -84,6 +149,13 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that the game finished and who the winner is.
+     *
+     * @param game game instance
+     * @param winner winning player
+     * @return event DTO
+     */
     public static GameEventDto gameFinished(Game game, Player winner) {
         return new GameEventDto(
                 GameEventType.GAME_FINISHED,
@@ -96,6 +168,13 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that the game was paused.
+     *
+     * @param game game instance
+     * @param requestedBy player who requested the pause
+     * @return event DTO
+     */
     public static GameEventDto gamePaused(Game game, Player requestedBy) {
         return new GameEventDto(
                 GameEventType.GAME_PAUSED,
@@ -107,7 +186,17 @@ public record GameEventDto(
                 )
         );
     }
-    //gameResumePending
+
+    /**
+     * Creates an event indicating that a resume handshake is pending.
+     *
+     * <p>This project uses a two-player handshake for resume:
+     * first player confirms -> WAITING, second player confirms -> RUNNING.
+     *
+     * @param game game instance
+     * @param requestedBy player who initiated/confirmed resume
+     * @return event DTO
+     */
     public static GameEventDto gameResumePending(Game game, Player requestedBy) {
         return new GameEventDto(
                 GameEventType.GAME_RESUME_PENDING,
@@ -121,8 +210,19 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that the game was resumed.
+     *
+     * <p>Implementation detail:
+     * {@link Map#of(Object, Object, Object, Object)} does not allow null values. Since the
+     * current turn player name may be null (depending on resume state), a mutable map is used.
+     *
+     * @param game game instance
+     * @param requestedBy player who completed the resume action
+     * @param currentTurnPlayerName name of the current turn player (may be null)
+     * @return event DTO
+     */
     public static GameEventDto gameResumed(Game game, Player requestedBy, String currentTurnPlayerName) {
-        // We should not use Map.of directly in GameEventDto, because of possible null reference
         Map<String, Object> payload = new HashMap<>();
         payload.put("requestedByPlayerName", requestedBy.getUsername());
         payload.put("currentTurnPlayerName", currentTurnPlayerName);
@@ -136,6 +236,14 @@ public record GameEventDto(
         );
     }
 
+    /**
+     * Creates an event indicating that a player forfeited the game and who the winner is.
+     *
+     * @param game game instance
+     * @param forfeitingPlayer player who forfeited
+     * @param winner winning player
+     * @return event DTO
+     */
     public static GameEventDto gameForfeited(Game game, Player forfeitingPlayer, Player winner) {
         return new GameEventDto(
                 GameEventType.GAME_FORFEITED,
@@ -148,5 +256,4 @@ public record GameEventDto(
                 )
         );
     }
-
 }

@@ -10,13 +10,11 @@ import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.GameEventDto;
-
 import ch.battleship.battleshipbackend.web.api.dto.GamePublicDto;
 import jakarta.persistence.EntityNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -32,6 +30,20 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit tests for {@link GameService#confirmBoard(String, UUID)} with focus on WebSocket events.
+ *
+ * <p>Focus:
+ * <ul>
+ *   <li>BOARD_CONFIRMED event is sent when a player confirms their board</li>
+ *   <li>When both boards are locked, the game becomes RUNNING and GAME_STARTED is sent</li>
+ *   <li>Event payload must not contain internal identifiers (anti-cheat / API contract)</li>
+ * </ul>
+ *
+ * <p>Note:
+ * These tests mock persistence and messaging. The domain state transitions are validated
+ * through returned DTOs and captured events.
+ */
 @ExtendWith(MockitoExtension.class)
 class GameServiceConfirmBoardEventTest {
 
@@ -72,6 +84,8 @@ class GameServiceConfirmBoardEventTest {
         Board boardA = new Board(config.getBoardWidth(), config.getBoardHeight(), playerA);
         Board boardB = new Board(config.getBoardWidth(), config.getBoardHeight(), playerB);
 
+        // confirmBoard checks only the number of placements (not their content).
+        // For unit tests we simulate a "ready" board by setting the correct list size.
         makeBoardReady(boardA, config);
         makeBoardReady(boardB, config);
 
@@ -79,20 +93,16 @@ class GameServiceConfirmBoardEventTest {
         game.addBoard(boardB);
 
         when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
+        // Return the passed aggregate to keep the test purely in-memory.
         lenient().when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
-
     @Test
     void confirmBoard_shouldSendBoardConfirmedEvent_toGameEventsTopic() {
-        // Arrange
-        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
-        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
-
         // Act
         gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
 
-        // Assert
+        // Assert: one BOARD_CONFIRMED event was broadcast
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate).convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
@@ -101,21 +111,18 @@ class GameServiceConfirmBoardEventTest {
         assertEquals(GAME_CODE, evt.gameCode());
         assertEquals(GameStatus.SETUP, evt.gameStatus());
 
+        // Anti-cheat: payload should not leak internal ids
         assertFalse(evt.payload().containsKey("playerId"));
         assertEquals("PlayerA", evt.payload().get("playerName"));
     }
 
     @Test
     void confirmBoard_shouldSetRunningAndSendGameStartedEvent_whenAllBoardsLocked() {
-        // Arrange
-        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
-        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
-
         // Act
         GamePublicDto dtoA = gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
         GamePublicDto dtoB = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
-        // Assert: game started (DTO Sicht von Spieler B)
+        // Assert: game started (DTO view of player B)
         assertEquals(GameStatus.RUNNING, dtoB.status());
         assertTrue(dtoB.yourBoardLocked());
         assertTrue(dtoB.opponentBoardLocked());
@@ -129,20 +136,18 @@ class GameServiceConfirmBoardEventTest {
         assertEquals(GameEventType.BOARD_CONFIRMED, captor.getAllValues().get(1).type());
         assertEquals(GameEventType.GAME_STARTED, captor.getAllValues().get(2).type());
 
-        // GAME_STARTED payload darf keine IDs mehr enthalten
+        // GAME_STARTED payload must not contain ids
         GameEventDto started = captor.getAllValues().get(2);
         assertFalse(started.payload().containsKey("currentTurnPlayerId"));
-        //assertFalse(started.payload().containsKey("currentTurnPlayerName"));
     }
 
     @Test
     void confirmBoard_shouldAssignFirstTurnPlayerId_whenGameStarts() {
-        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
-        when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
-
+        // Act
         gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
         gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
+        // Assert: service persists a RUNNING game with assigned current turn player
         ArgumentCaptor<Game> gameCaptor = ArgumentCaptor.forClass(Game.class);
         verify(gameRepository, atLeastOnce()).save(gameCaptor.capture());
 
@@ -157,7 +162,7 @@ class GameServiceConfirmBoardEventTest {
         gameService.confirmBoard(GAME_CODE, PLAYER_A_ID);
         GamePublicDto dtoAfterSecond = gameService.confirmBoard(GAME_CODE, PLAYER_B_ID);
 
-        // Assert (REST / DTO)
+        // Assert: after second confirmation the game is RUNNING
         assertEquals(GameStatus.RUNNING, dtoAfterSecond.status());
 
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
@@ -169,37 +174,50 @@ class GameServiceConfirmBoardEventTest {
         assertEquals(GameEventType.BOARD_CONFIRMED, secondConfirm.type());
         assertEquals(GameStatus.RUNNING, secondConfirm.gameStatus());
 
-
-        // Option 2 (strenger): gar keine IDs in WS -> dann so:
+        // Anti-cheat: no ids in WS payload
         assertFalse(secondConfirm.payload().containsKey("playerId"));
 
         GameEventDto started = captor.getAllValues().get(2);
         assertEquals(GameEventType.GAME_STARTED, started.type());
-
-        // Variante A: GAME_STARTED darf KEINE Turn-IDs mehr enthalten
         assertFalse(started.payload().containsKey("currentTurnPlayerId"));
     }
 
     @Test
     void confirmBoard_shouldNotSendEvent_whenGameNotFound() {
+        // Arrange
         when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.empty());
 
+        // Act + Assert
         assertThrows(EntityNotFoundException.class,
                 () -> gameService.confirmBoard(GAME_CODE, PLAYER_A_ID));
 
         verifyNoInteractions(messagingTemplate);
     }
 
-
+    /**
+     * Simulates a board that is "ready" for confirmation.
+     *
+     * <p>Implementation note:
+     * {@code confirmBoard(...)} currently checks only the number of placements, not their contents.
+     * To keep this test focused on event publishing, we populate the placement list with {@code null}
+     * entries to reach the expected size without running the full fleet-placement algorithm.
+     */
     private static void makeBoardReady(Board board, GameConfiguration config) {
         int expectedShips = expectedShipsFromFleetDefinition(config.getFleetDefinition());
 
         board.getPlacements().clear();
         for (int i = 0; i < expectedShips; i++) {
-            board.getPlacements().add(null); // confirmBoard prüft nur size
+            board.getPlacements().add(null);
         }
     }
 
+    /**
+     * Parses the fleet definition string (e.g. {@code "2x2,2x3,1x4,1x5"}) and returns the ship count.
+     *
+     * @param fleetDefinition string in "<count>x<size>" format, comma-separated
+     * @return total number of ships defined
+     * @throws IllegalStateException if the format is missing or invalid
+     */
     private static int expectedShipsFromFleetDefinition(String fleetDefinition) {
         if (fleetDefinition == null || fleetDefinition.isBlank()) {
             throw new IllegalStateException("Fleet definition is missing");
@@ -211,7 +229,6 @@ class GameServiceConfirmBoardEventTest {
             String token = part.trim();
             if (token.isEmpty()) continue;
 
-            // format: "<count>x<size>" e.g. "2x3"
             int xPos = token.indexOf('x');
             if (xPos <= 0) {
                 throw new IllegalStateException("Invalid fleet token: " + token);

@@ -1,8 +1,6 @@
 package ch.battleship.battleshipbackend.application.service;
 
-import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
 import ch.battleship.battleshipbackend.domain.*;
-import ch.battleship.battleshipbackend.domain.common.BaseEntity;
 import ch.battleship.battleshipbackend.domain.enums.GameStatus;
 import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.domain.enums.ShipType;
@@ -12,9 +10,7 @@ import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
 import ch.battleship.battleshipbackend.web.api.dto.GamePublicDto;
-import ch.battleship.battleshipbackend.web.api.dto.ShipPlacementDto;
 import jakarta.persistence.EntityNotFoundException;
-import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -22,16 +18,35 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.lang.reflect.Field;
 import java.util.Optional;
 import java.util.UUID;
 
-import static org.assertj.core.api.Assertions.*;
+import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-
+/**
+ * Unit tests for {@link GameService}.
+ *
+ * <p>Focus areas:
+ * <ul>
+ *   <li>Game creation and default configuration</li>
+ *   <li>Joining a game (player limits, state transitions, board + fleet creation)</li>
+ *   <li>Firing shots (validation, persistence interactions, hit/miss)</li>
+ *   <li>Public state robustness (no null crashes in early states)</li>
+ *   <li>Dev endpoints helper methods (board state + ASCII rendering)</li>
+ * </ul>
+ *
+ * <p>Notes:
+ * <ul>
+ *   <li>Tests verify both domain effects (state, collections) and repository interactions.</li>
+ *   <li>IDs are simulated via {@link ch.battleship.battleshipbackend.testutil.EntityTestUtils#setId(Object, UUID)}
+ *       because normally they are assigned by persistence.</li>
+ * </ul>
+ */
 @ExtendWith(MockitoExtension.class)
 class GameServiceTest {
 
@@ -59,14 +74,15 @@ class GameServiceTest {
         // Act
         Game game = gameService.createNewGame();
 
-        // Assert: Rückgabewert
+        // Assert: return value
         assertThat(game).isNotNull();
         assertThat(game.getStatus()).isEqualTo(GameStatus.WAITING);
         assertThat(game.getGameCode()).isNotBlank();
 
-        // Assert: Interaktion mit Repository
+        // Assert: repository interaction
         verify(gameRepository, times(1)).save(gameCaptor.capture());
         Game saved = gameCaptor.getValue();
+
         assertThat(saved.getStatus()).isEqualTo(GameStatus.WAITING);
         assertThat(saved.getGameCode()).isNotBlank();
     }
@@ -93,9 +109,11 @@ class GameServiceTest {
 
     @Test
     void getByGameCode_shouldDelegateToRepository() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String gameCode = "TEST-CODE";
         Game existing = new Game(gameCode, config);
+
         when(gameRepository.findByGameCode(gameCode)).thenReturn(Optional.of(existing));
 
         // Act
@@ -104,6 +122,7 @@ class GameServiceTest {
         // Assert
         assertThat(result).isPresent();
         assertThat(result.get().getGameCode()).isEqualTo(gameCode);
+
         verify(gameRepository, times(1)).findByGameCode(gameCode);
         verifyNoMoreInteractions(gameRepository);
     }
@@ -114,9 +133,10 @@ class GameServiceTest {
 
     @Test
     void joinGame_firstPlayer_shouldKeepStatusWaiting_andCreateBoard() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
-        Game game = new Game(code, config); // status = WAITING, players/boards = empty
+        Game game = new Game(code, config); // status = WAITING
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -124,28 +144,32 @@ class GameServiceTest {
         // Act
         Game result = gameService.joinGame(code, "Player1");
 
-        // Assert
+        // Assert: player created
         assertThat(result.getPlayers()).hasSize(1);
         Player p1 = result.getPlayers().get(0);
         assertThat(p1.getUsername()).isEqualTo("Player1");
 
+        // Assert: board created and linked
         assertThat(result.getBoards()).hasSize(1);
         Board b1 = result.getBoards().get(0);
         assertThat(b1.getOwner()).isEqualTo(p1);
         assertThat(b1.getWidth()).isEqualTo(10);
         assertThat(b1.getHeight()).isEqualTo(10);
 
+        // Status stays WAITING (only first player joined)
         assertThat(result.getStatus()).isEqualTo(GameStatus.WAITING);
+
         verify(gameRepository, times(1)).save(game);
     }
 
     @Test
     void joinGame_secondPlayer_shouldSetStatusSetup_andCreateSecondBoard() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
 
-        // Konsistenter Startzustand: 1 Player + 1 Board
+        // consistent start state: 1 player + 1 board already in game
         Player existing = new Player("Player1");
         game.addPlayer(existing);
         game.addBoard(new Board(10, 10, existing));
@@ -162,15 +186,17 @@ class GameServiceTest {
         assertThat(p2.getUsername()).isEqualTo("Player2");
 
         assertThat(result.getBoards()).hasSize(2);
-        assertThat(result.getBoards())
-                .anyMatch(b -> b.getOwner().equals(p2));
+        assertThat(result.getBoards()).anyMatch(b -> b.getOwner().equals(p2));
 
+        // after second player join -> SETUP
         assertThat(result.getStatus()).isEqualTo(GameStatus.SETUP);
+
         verify(gameRepository, times(1)).save(game);
     }
 
     @Test
     void joinGame_thirdPlayer_shouldThrowIllegalStateException_andNotChangeBoards() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -188,13 +214,16 @@ class GameServiceTest {
         assertThatThrownBy(() -> gameService.joinGame(code, "Player3"))
                 .isInstanceOf(IllegalStateException.class);
 
+        // no mutation expected (third join rejected)
         assertThat(game.getPlayers()).hasSize(2);
         assertThat(game.getBoards()).hasSize(2);
+
         verify(gameRepository, never()).save(any());
     }
 
     @Test
     void joinGame_nonExistingGame_shouldThrowEntityNotFound() {
+        // Arrange
         String code = "UNKNOWN";
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.empty());
 
@@ -210,7 +239,7 @@ class GameServiceTest {
         // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
-        Game game = new Game(code, config); // status = WAITING, noch keine Player/Boards
+        Game game = new Game(code, config);
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -222,13 +251,12 @@ class GameServiceTest {
         assertThat(result.getBoards()).hasSize(1);
         Board board = result.getBoards().get(0);
 
-        // 1) Es sollten Schiffe platziert sein
+        // 1) placements exist
         assertThat(board.getPlacements())
-                .as("Es sollten ShipPlacements auf dem Board existieren")
+                .as("ShipPlacements must exist on the board")
                 .isNotEmpty();
 
-        // 2) Für die Default-Config: "2x2,2x3,1x4,1x5"
-        //    => 2x DESTROYER, 2x CRUISER, 1x BATTLESHIP, 1x CARRIER
+        // 2) default fleet: "2x2,2x3,1x4,1x5"
         var types = board.getPlacements().stream()
                 .map(p -> p.getShip().getType())
                 .toList();
@@ -236,38 +264,36 @@ class GameServiceTest {
         assertThat(types)
                 .containsExactlyInAnyOrder(
                         ShipType.DESTROYER, ShipType.DESTROYER,
-                        ShipType.CRUISER,   ShipType.CRUISER,
+                        ShipType.CRUISER, ShipType.CRUISER,
                         ShipType.BATTLESHIP,
                         ShipType.CARRIER
                 );
 
-        // 3) Alle Koordinaten müssen innerhalb des Boards liegen und dürfen sich nicht überlappen
+        // 3) all coords inside bounds and non-overlapping
         var allCoords = board.getPlacements().stream()
                 .flatMap(p -> p.getCoveredCoordinates().stream())
                 .toList();
 
-        // Board-Grenzen
-        assertThat(allCoords)
-                .allSatisfy(c -> {
-                    assertThat(c.getX()).isBetween(0, board.getWidth() - 1);
-                    assertThat(c.getY()).isBetween(0, board.getHeight() - 1);
-                });
+        assertThat(allCoords).allSatisfy(c -> {
+            assertThat(c.getX()).isBetween(0, board.getWidth() - 1);
+            assertThat(c.getY()).isBetween(0, board.getHeight() - 1);
+        });
 
-        // Keine doppelten Koordinaten (keine Überlappung)
         assertThat(allCoords)
-                .as("Kein Feld darf von zwei verschiedenen Schiffen belegt werden")
+                .as("No coordinate may be covered by more than one ship")
                 .doesNotHaveDuplicates();
 
-        // Debug-Ausgabe:
+        // Debug helper (optional)
         // printBoard(board);
     }
 
     // ------------------------------------------------------------------------------------
-    // fireShot (Service-Logik, inkl. Validierung + Repo)
+    // fireShot (Service-Logic, validation incl. + Repo)
     // ------------------------------------------------------------------------------------
 
     @Test
     void fireShot_shouldReturnShotAndPersistGame_whenAllDataIsValid() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -284,41 +310,27 @@ class GameServiceTest {
                 defender
         );
 
+        // place a ship so (3,3) becomes a HIT
         Ship ship = new Ship(ShipType.DESTROYER); // size 2
-        defenderBoard.placeShip(
-                ship,
-                new Coordinate(3, 3),
-                Orientation.HORIZONTAL
-        );
+        defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
 
         game.addBoard(defenderBoard);
 
-        // >>> IDs simulieren (persistierter Zustand)
+        // simulate persisted IDs
         UUID attackerId = UUID.randomUUID();
         UUID defenderId = UUID.randomUUID();
-
-
         setId(attacker, attackerId);
         setId(defender, defenderId);
 
+        // set turn to attacker
         game.setCurrentTurnPlayerId(attacker.getId());
 
-
-        // --- Stubbing ---
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
-
-        // ShotRepository: gebe einfach das gleiche Shot-Objekt zurück,
-        // das reinkommt (wie eine "Fake-DB")
         when(shotRepository.save(any(Shot.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // Act
-        Shot shot = gameService.fireShot(
-                code,
-                attackerId,
-                3,
-                3
-        );
+        Shot shot = gameService.fireShot(code, attackerId, 3, 3);
 
         // Assert
         assertThat(shot).isNotNull();
@@ -327,36 +339,37 @@ class GameServiceTest {
         assertThat(shot.getTargetBoard()).isEqualTo(defenderBoard);
         assertThat(game.getShots()).hasSize(1);
 
-        // Interaktionen prüfen
         verify(gameRepository, times(1)).findByGameCode(code);
         verify(gameRepository, times(1)).save(game);
         verify(shotRepository, times(1)).save(any(Shot.class));
         verifyNoMoreInteractions(gameRepository, shotRepository);
     }
 
-
     @Test
     void fireShot_shouldThrowEntityNotFound_whenGameDoesNotExist() {
+        // Arrange
         String code = "UNKNOWN";
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() ->
-                gameService.fireShot(code, UUID.randomUUID(), 0, 0)
-        ).isInstanceOf(EntityNotFoundException.class);
+        // Act + Assert
+        assertThatThrownBy(() -> gameService.fireShot(code, UUID.randomUUID(), 0, 0))
+                .isInstanceOf(EntityNotFoundException.class);
 
         verify(gameRepository, never()).save(any());
     }
 
     @Test
     void fireShot_shouldThrowIllegalState_whenGameIsNotRunning() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
-        Game game = new Game(code, config); // Status = WAITING
+        Game game = new Game(code, config); // status = WAITING
+
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
-        assertThatThrownBy(() ->
-                gameService.fireShot(code, UUID.randomUUID(), 0, 0)
-        ).isInstanceOf(IllegalStateException.class)
+        // Act + Assert
+        assertThatThrownBy(() -> gameService.fireShot(code, UUID.randomUUID(), 0, 0))
+                .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("not RUNNING");
 
         verify(gameRepository, never()).save(any());
@@ -378,11 +391,10 @@ class GameServiceTest {
         setId(defenderBoard, UUID.randomUUID());
         game.addBoard(defenderBoard);
 
-        // Shooter ist NICHT Teil des Games
+        // shooter not part of game
         UUID shooterId = UUID.randomUUID();
 
-        // IMPORTANT: damit wir nicht bei "no current turn" hängen bleiben
-        // setzen wir den Turn explizit auf diesen Shooter (auch wenn er nicht im Game ist)
+        // make sure we don't fail on "current turn missing"
         game.setCurrentTurnPlayerId(shooterId);
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
@@ -394,7 +406,6 @@ class GameServiceTest {
 
         verifyNoInteractions(shotRepository);
     }
-
 
     @Test
     void fireShot_shouldThrowIllegalState_whenOpponentBoardMissing() {
@@ -412,7 +423,7 @@ class GameServiceTest {
         game.addPlayer(attacker);
         game.addPlayer(defender);
 
-        // NUR das Board vom Attacker (Defender hat keins -> Gegner-Board fehlt)
+        // only attacker's board -> no opponent board found
         Board attackerBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), attacker);
         setId(attackerBoard, UUID.randomUUID());
         game.addBoard(attackerBoard);
@@ -424,11 +435,10 @@ class GameServiceTest {
         // Act + Assert
         assertThatThrownBy(() -> gameService.fireShot(code, attacker.getId(), 1, 1))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("No opponent board found for this game"); // oder exakt die Message, die du wirfst
+                .hasMessageContaining("No opponent board found for this game");
 
         verifyNoInteractions(shotRepository);
     }
-
 
     @Test
     void fireShot_shouldThrowIllegalArgument_whenCoordinateOutOfBounds() {
@@ -450,7 +460,7 @@ class GameServiceTest {
         setId(defenderBoard, UUID.randomUUID());
         game.addBoard(defenderBoard);
 
-        // IMPORTANT: damit Turn-Prüfung nicht vorher knallt
+        // ensure turn check passes
         game.setCurrentTurnPlayerId(attacker.getId());
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
@@ -462,9 +472,11 @@ class GameServiceTest {
 
         verifyNoInteractions(shotRepository);
     }
-    /*
-    "  Public state
-     */
+
+    // ------------------------------------------------------------------------------------
+    // Public state robustness
+    // ------------------------------------------------------------------------------------
+
     @Test
     void getPublicState_shouldBeRobust_whenOnlyOnePlayerInWaiting() {
         // Arrange
@@ -508,7 +520,7 @@ class GameServiceTest {
         game.addPlayer(playerA);
         game.addPlayer(playerB);
 
-        // Nur Board für A, bewusst kein Board für B
+        // only board for A
         Board boardA = new Board(config.getBoardWidth(), config.getBoardHeight(), playerA);
         setId(boardA, UUID.randomUUID());
         game.addBoard(boardA);
@@ -521,15 +533,17 @@ class GameServiceTest {
         // Assert
         assertEquals(GameStatus.SETUP, dto.status());
         assertFalse(dto.yourTurn());
-        assertFalse(dto.opponentBoardLocked()); // kein Board -> false
-        assertEquals("PlayerB", dto.opponentName()); // Gegner existiert, auch wenn Board fehlt
+        assertFalse(dto.opponentBoardLocked()); // no opponent board -> false
+        assertEquals("PlayerB", dto.opponentName());
     }
 
-    /*
-    *  Boardstate
-     */
+    // ------------------------------------------------------------------------------------
+    // Dev-only helpers in service (board state + ASCII)
+    // ------------------------------------------------------------------------------------
+
     @Test
     void getBoardState_shouldReturnBoardWithShipPlacements() {
+        // Arrange
         GameConfiguration config = GameConfiguration.defaultConfig();
         String code = "TEST-CODE";
         Game game = new Game(code, config);
@@ -539,17 +553,18 @@ class GameServiceTest {
 
         Board board = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
         Ship ship = new Ship(ShipType.DESTROYER);
-        board.placeShip(ship, new Coordinate(3,3), Orientation.HORIZONTAL);
+        board.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
 
         UUID boardId = UUID.randomUUID();
         setId(board, boardId);
-
         game.addBoard(board);
 
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
+        // Act
         BoardStateDto state = gameService.getBoardState(code, boardId);
 
+        // Assert
         assertThat(state.boardId()).isEqualTo(boardId);
         assertThat(state.width()).isEqualTo(config.getBoardWidth());
         assertThat(state.height()).isEqualTo(config.getBoardHeight());
@@ -572,9 +587,8 @@ class GameServiceTest {
         UUID someBoardId = UUID.randomUUID();
 
         // Act + Assert
-        assertThatThrownBy(() ->
-                gameService.getBoardState(code, someBoardId)
-        ).isInstanceOf(EntityNotFoundException.class);
+        assertThatThrownBy(() -> gameService.getBoardState(code, someBoardId))
+                .isInstanceOf(EntityNotFoundException.class);
 
         verify(gameRepository, times(1)).findByGameCode(code);
         verifyNoMoreInteractions(gameRepository);
@@ -590,15 +604,13 @@ class GameServiceTest {
         Player player = new Player("Player1");
         game.addPlayer(player);
 
-        // Game hat KEIN Board mit der Id, die wir gleich abfragen
         when(gameRepository.findByGameCode(code)).thenReturn(Optional.of(game));
 
         UUID unknownBoardId = UUID.randomUUID();
 
         // Act + Assert
-        assertThatThrownBy(() ->
-                gameService.getBoardState(code, unknownBoardId)
-        ).isInstanceOf(IllegalStateException.class)
+        assertThatThrownBy(() -> gameService.getBoardState(code, unknownBoardId))
+                .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Board does not belong");
 
         verify(gameRepository, times(1)).findByGameCode(code);
@@ -619,17 +631,16 @@ class GameServiceTest {
 
         Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
 
-        // Schiff: DESTROYER bei (3,3) horizontal -> Felder (3,3) und (4,3)
+        // DESTROYER at (3,3) horizontal -> (3,3) and (4,3)
         Ship ship = new Ship(ShipType.DESTROYER);
         defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
 
         game.addBoard(defenderBoard);
 
-        // Zwei Schüsse auf dieses Board (direkt über Domain)
+        // shots via domain logic (not the service)
         game.fireShot(attacker, defenderBoard, new Coordinate(3, 3)); // HIT
         game.fireShot(attacker, defenderBoard, new Coordinate(0, 0)); // MISS
 
-        // IDs simulieren
         UUID boardId = UUID.randomUUID();
         setId(defenderBoard, boardId);
 
@@ -637,32 +648,24 @@ class GameServiceTest {
 
         // Act
         String ascii = gameService.getBoardAscii(code, boardId, true);
-        System.out.println(ascii);
-        // Assert: Header
-        assertThat(ascii)
-                .contains("Board (" + config.getBoardWidth() + "x" + config.getBoardHeight() + ")");
+
+        // Assert
+        assertThat(ascii).contains("Board (" + config.getBoardWidth() + "x" + config.getBoardHeight() + ")");
 
         String[] lines = ascii.split("\\R");
 
-        // Layout:
+        // Layout assumptions:
         // 0: "Board (10x10)"
-        // 1: "   0 1 2 3 4 5 6 7 8 9 "
-        // 2: " 0 . . . . . ..."
-        // => Zeile für y = n: index 2 + n
-        //    Spalte x: char an Position 3 + x*2
-
-        // Zeile y = 0
+        // 1: "   0 1 2 3 ..."
+        // 2: " 0 . . . ..."
+        // row y=n -> lines[2+n]
+        // col x -> char index 3 + x*2
         String row0 = lines[2];
-        // (0,0) = Miss -> 'O'
-        assertThat(row0.charAt(3 + 0 * 2)).isEqualTo('O');
+        assertThat(row0.charAt(3)).isEqualTo('O'); // (0,0) = MISS -> O
 
-        // Zeile y = 3
         String row3 = lines[2 + 3];
-        // (3,3) = Hit -> 'X'
-        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X');
-        // (4,3) = ungetroffenes Schiff -> 'S'
-        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('S');
-
+        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X'); // (3,3) = HIT -> X
+        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('S'); // (4,3) = ship shown -> S
     }
 
     @Test
@@ -679,13 +682,11 @@ class GameServiceTest {
 
         Board defenderBoard = new Board(config.getBoardWidth(), config.getBoardHeight(), defender);
 
-        // Schiff: DESTROYER bei (3,3) horizontal
         Ship ship = new Ship(ShipType.DESTROYER);
         defenderBoard.placeShip(ship, new Coordinate(3, 3), Orientation.HORIZONTAL);
 
         game.addBoard(defenderBoard);
 
-        // Shots
         game.fireShot(attacker, defenderBoard, new Coordinate(3, 3)); // HIT
         game.fireShot(attacker, defenderBoard, new Coordinate(0, 0)); // MISS
 
@@ -696,27 +697,25 @@ class GameServiceTest {
 
         // Act
         String ascii = gameService.getBoardAscii(code, boardId, false);
-        System.out.println(ascii);
 
         // Assert
         String[] lines = ascii.split("\\R");
 
-        // Zeile y = 0
         String row0 = lines[2];
-        // (0,0) = Miss -> 'O'
-        assertThat(row0.charAt(3 + 0 * 2)).isEqualTo('O');
+        assertThat(row0.charAt(3)).isEqualTo('O'); // (0,0) MISS
 
-        // Zeile y = 3
         String row3 = lines[2 + 3];
-        // (3,3) = Hit -> 'X'
-        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X');
-        // (4,3) = ungetroffenes Schiff, aber showShips=false -> '.'
-        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('.');
-
+        assertThat(row3.charAt(3 + 3 * 2)).isEqualTo('X'); // (3,3) HIT
+        assertThat(row3.charAt(3 + 4 * 2)).isEqualTo('.'); // (4,3) ship hidden -> .
     }
 
-    /*
-    * Helper
+    // ------------------------------------------------------------------------------------
+    // Debug helper (optional)
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * Debug-only helper to print a board with ships as 'S' to console.
+     * Not used by assertions; useful when diagnosing failing placement tests.
      */
     private void printBoard(Board board) {
         int width = board.getWidth();
@@ -724,24 +723,18 @@ class GameServiceTest {
 
         char[][] grid = new char[height][width];
 
-        // alles zuerst mit '.' füllen
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 grid[y][x] = '.';
             }
         }
 
-        // Schiffe einzeichnen
         for (ShipPlacement placement : board.getPlacements()) {
             for (Coordinate c : placement.getCoveredCoordinates()) {
-                int x = c.getX();
-                int y = c.getY();
-                // einfache Darstellung: S = Ship
-                grid[y][x] = 'S';
+                grid[c.getY()][c.getX()] = 'S';
             }
         }
 
-        // Ausgabe in die Konsole (Test-Output)
         System.out.println("Board (" + width + "x" + height + "):");
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {

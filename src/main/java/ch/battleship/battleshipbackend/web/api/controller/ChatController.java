@@ -15,16 +15,39 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Comparator;
 import java.util.List;
 
+/**
+ * REST controller exposing read-only chat history endpoints for a game.
+ *
+ * <p>This controller provides the persisted chat messages of a game as DTOs.
+ * Sorting is applied by creation time to return the conversation in chronological order.
+ *
+ * <p>Note:
+ * Chat message sender is mapped from a {@code ManyToOne(fetch = LAZY)} association.
+ * Therefore the endpoint runs within a read-only transaction to allow lazy loading
+ * while still keeping the implementation simple.
+ */
 @RestController
 @RequestMapping("/api/games/{gameCode}/chat")
 public class ChatController {
 
     private final GameRepository gameRepository;
 
+    /**
+     * Creates a new {@code ChatController}.
+     *
+     * @param gameRepository repository used to load games including their chat messages
+     */
     public ChatController(GameRepository gameRepository) {
         this.gameRepository = gameRepository;
     }
 
+    /**
+     * Returns the chat history of a game ordered by creation time ascending.
+     *
+     * @param gameCode public game identifier
+     * @return list of chat messages as DTOs, sorted chronologically
+     * @throws EntityNotFoundException if no game exists for the given gameCode
+     */
     @Operation(summary = "List the chat history of a specific game")
     @GetMapping("/messages")
     @Transactional(readOnly = true)

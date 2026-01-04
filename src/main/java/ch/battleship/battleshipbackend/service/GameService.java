@@ -16,6 +16,25 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.*;
 import java.util.concurrent.ThreadLocalRandom;
 
+/**
+ * Application service implementing the main Battleship use-cases.
+ *
+ * <p>Responsibilities:
+ * <ul>
+ *   <li>Create games and allow players to join</li>
+ *   <li>Provide client views (public state and snapshots)</li>
+ *   <li>Handle game actions (board confirmation, reroll, firing shots)</li>
+ *   <li>Manage pause/resume/forfeit flows</li>
+ *   <li>Publish game events to clients via WebSocket topics</li>
+ * </ul>
+ *
+ * <p>Notes:
+ * <ul>
+ *   <li>This service is transactional to ensure game state updates are persisted consistently.</li>
+ *   <li>Validation is performed here to prevent illegal state changes (wrong status, wrong turn, etc.).</li>
+ *   <li>DTO mapping intentionally hides hidden information (e.g. opponent ship placements) to prevent cheating.</li>
+ * </ul>
+ */
 @Service
 @Transactional
 public class GameService {
@@ -24,6 +43,13 @@ public class GameService {
     private final SimpMessagingTemplate messagingTemplate;
     private final ShotRepository shotRepository;
 
+    /**
+     * Creates a new {@code GameService}.
+     *
+     * @param gameRepository repository for game persistence
+     * @param messagingTemplate WebSocket messaging template for event publishing (may be null in tests)
+     * @param shotRepository repository for shot persistence
+     */
     public GameService(GameRepository gameRepository,
                        SimpMessagingTemplate messagingTemplate,
                        ShotRepository shotRepository) {
@@ -32,16 +58,38 @@ public class GameService {
         this.shotRepository = shotRepository;
     }
 
+    /**
+     * Creates a new game using the default configuration.
+     *
+     * @return persisted game instance
+     */
     public Game createNewGame() {
         GameConfiguration config = GameConfiguration.defaultConfig();
         Game game = new Game(config);
         return gameRepository.save(game);
     }
 
+    /**
+     * Loads a game by its public game code.
+     *
+     * @param gameCode public identifier shared with clients
+     * @return matching game if present
+     */
     public Optional<Game> getByGameCode(String gameCode) {
         return gameRepository.findByGameCode(gameCode);
     }
 
+    /**
+     * Returns a sanitized, client-safe view of the current game state.
+     *
+     * <p>This view intentionally does not expose internal identifiers or hidden information
+     * that could be used for cheating.
+     *
+     * @param gameCode public game identifier
+     * @param playerId requesting player id
+     * @return public game state for the requesting player
+     * @throws EntityNotFoundException if the game does not exist
+     */
     public GamePublicDto getPublicState(String gameCode, UUID playerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -49,7 +97,16 @@ public class GameService {
     }
 
     /**
-     * Internal join logic (kept as-is). Controller should usually use joinGamePublic.
+     * Internal join logic (kept as-is). Controller should usually use {@link #joinGamePublic(String, String)}.
+     *
+     * <p>Creates a player and an initial board with an auto-placed fleet.
+     * The game must be in WAITING state and may only contain up to two players.
+     *
+     * @param gameCode public identifier of the game to join
+     * @param username chosen display name (must be unique within the game)
+     * @return updated and persisted game
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not joinable
      */
     public Game joinGame(String gameCode, String username) {
         Game game = gameRepository.findByGameCode(gameCode)
@@ -64,7 +121,7 @@ public class GameService {
             throw new IllegalStateException("Game already has 2 players");
         }
 
-        // (optional but recommended) prevent duplicate usernames in same game
+        // Prevent duplicate usernames in the same game (simplifies client UX and state mapping).
         boolean nameExists = game.getPlayers().stream()
                 .anyMatch(p -> p != null && username.equals(p.getUsername()));
         if (nameExists) {
@@ -83,7 +140,7 @@ public class GameService {
         autoPlaceFleet(board, game.getConfig());
         game.addBoard(board);
 
-        // when second player joins -> SETUP
+        // When the second player joins, the game enters SETUP (boards may be rerolled/confirmed).
         if (currentPlayers + 1 == 2) {
             game.setStatus(GameStatus.SETUP);
         }
@@ -92,7 +149,13 @@ public class GameService {
     }
 
     /**
-     * Public join response: returns playerId (required for further requests) + status.
+     * Public join operation returning the data required by clients for subsequent requests.
+     *
+     * <p>Returns the generated player id which acts as the client identity within the game.
+     *
+     * @param gameCode public identifier of the game
+     * @param username chosen display name
+     * @return join response including player id and current game status
      */
     public JoinGameResponseDto joinGamePublic(String gameCode, String username) {
         Game game = joinGame(gameCode, username);
@@ -111,6 +174,33 @@ public class GameService {
         );
     }
 
+    /**
+     * Returns a detailed snapshot for the requesting player.
+     *
+     * <p>The snapshot includes own board state and shot history while keeping opponent
+     * ship placements hidden to prevent cheating.
+     *
+     * @param gameCode public game identifier
+     * @param playerId requesting player id
+     * @return snapshot view for the requesting player
+     * @throws EntityNotFoundException if the game does not exist
+     */
+    public GameSnapshotDto getSnapshot(String gameCode, UUID playerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        return toSnapshot(game, playerId);
+    }
+
+    /**
+     * Pauses a running game and notifies clients via WebSocket.
+     *
+     * @param gameCode public game identifier
+     * @param requestedByPlayerId player requesting the pause
+     * @return persisted game state
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not running or player is not part of the game
+     */
     public Game pauseGame(String gameCode, UUID requestedByPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -137,6 +227,23 @@ public class GameService {
         return saved;
     }
 
+    /**
+     * Resumes a paused game using a two-player handshake.
+     *
+     * <p>Resume flow:
+     * <ul>
+     *   <li>First player confirms resume: status changes from PAUSED to WAITING and stores the confirmer id.</li>
+     *   <li>Second player confirms resume: status changes from WAITING to RUNNING and clears the confirmer id.</li>
+     * </ul>
+     *
+     * <p>This prevents a single player from unilaterally resuming a game.
+     *
+     * @param gameCode public game identifier
+     * @param requestedByPlayerId player requesting resume
+     * @return response including whether the handshake is complete and a snapshot for the requester
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the resume operation is not allowed for the current state
+     */
     public GameResumeResponseDto resumeGame(String gameCode, UUID requestedByPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -170,9 +277,11 @@ public class GameService {
 
         UUID first = game.getResumeReadyPlayerId();
 
+        // Resume handshake: requires both players to confirm resume.
+        // First confirmation: PAUSED -> WAITING and stores resumeReadyPlayerId.
+        // Second confirmation: WAITING -> RUNNING and clears resumeReadyPlayerId.
         Game saved;
         if (game.getStatus() == GameStatus.PAUSED) {
-            // first player confirms resume -> go WAITING
             game.setStatus(GameStatus.WAITING);
             game.setResumeReadyPlayerId(requestedByPlayerId);
 
@@ -181,10 +290,10 @@ public class GameService {
         } else {
             // status == WAITING
             if (Objects.equals(first, requestedByPlayerId)) {
-                // same player again -> idempotent
+                // Same player again -> idempotent
                 saved = game;
             } else {
-                // second player confirms -> RUNNING
+                // Second player confirms -> RUNNING
                 game.setStatus(GameStatus.RUNNING);
                 game.setResumeReadyPlayerId(null);
 
@@ -206,7 +315,15 @@ public class GameService {
         );
     }
 
-
+    /**
+     * Forfeits a running/paused game, determines the winner and notifies clients.
+     *
+     * @param gameCode public game identifier
+     * @param forfeitingPlayerId player who forfeits the game
+     * @return persisted game state
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not forfeitable or winner cannot be determined
+     */
     public Game forfeitGame(String gameCode, UUID forfeitingPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -239,6 +356,32 @@ public class GameService {
         return saved;
     }
 
+    /**
+     * Fires a shot for the current turn player and applies turn and win logic.
+     *
+     * <p>Validates:
+     * <ul>
+     *   <li>game is RUNNING</li>
+     *   <li>current turn is set</li>
+     *   <li>requester is the current turn player</li>
+     *   <li>coordinates are within opponent board bounds</li>
+     * </ul>
+     *
+     * <p>Turn rule:
+     * <ul>
+     *   <li>A MISS switches the turn to the opponent.</li>
+     *   <li>HIT/SUNK keeps the turn (classic Battleship rule).</li>
+     * </ul>
+     *
+     * @param gameCode public game identifier
+     * @param shooterId player firing the shot (must match current turn)
+     * @param x 0-based x coordinate
+     * @param y 0-based y coordinate
+     * @return persisted shot entity
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the shot is not allowed (wrong state/turn/player)
+     * @throws IllegalArgumentException if coordinates are out of bounds
+     */
     public Shot fireShot(String gameCode, UUID shooterId, int x, int y) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -275,7 +418,7 @@ public class GameService {
 
         Shot persistedShot = shotRepository.save(shot);
 
-        // TURN LOGIC:
+        // Turn rule: a MISS switches the turn, HIT/SUNK keeps the turn.
         if (shot.getResult() == ShotResult.MISS) {
             UUID nextTurn = game.getPlayers().stream()
                     .filter(p -> !Objects.equals(p.getId(), shooterId))
@@ -285,7 +428,7 @@ public class GameService {
             game.setCurrentTurnPlayerId(nextTurn);
         }
 
-        // WIN CHECK
+        // Win check: defender has lost if all ship coordinates were hit on the target board.
         boolean defenderAllSunk = targetBoard.getPlacements().stream()
                 .allMatch(p -> p.getCoveredCoordinates().stream().allMatch(shipCoord ->
                         game.getShots().stream()
@@ -328,6 +471,15 @@ public class GameService {
         return persistedShot;
     }
 
+    /**
+     * Re-generates a player's board during the setup phase.
+     *
+     * @param gameCode public game identifier
+     * @param playerId board owner
+     * @return board state including current placements
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not in SETUP, the player has no board, or the board is locked
+     */
     public BoardStateDto rerollBoard(String gameCode, UUID playerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -350,7 +502,6 @@ public class GameService {
 
         gameRepository.save(game);
 
-        // DTO directly (not via dev-only method)
         return new BoardStateDto(
                 board.getId(),
                 board.getWidth(),
@@ -360,6 +511,18 @@ public class GameService {
         );
     }
 
+    /**
+     * Locks a player's board (confirmation) and starts the game once both boards are confirmed.
+     *
+     * <p>When the second board is confirmed, the game transitions to RUNNING and the initial turn
+     * player is selected randomly if not already set.
+     *
+     * @param gameCode public game identifier
+     * @param playerId confirming player id
+     * @return public state view for the confirming player
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not in SETUP, board is invalid, or already locked
+     */
     public GamePublicDto confirmBoard(String gameCode, UUID playerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -410,10 +573,8 @@ public class GameService {
                     .findFirst()
                     .orElseThrow(() -> new IllegalStateException("Player not found in this game"));
 
-            // BOARD_CONFIRMED
             messagingTemplate.convertAndSend(destination, GameEventDto.boardConfirmed(saved, confirmingPlayer));
 
-            // GAME_STARTED (inkl. getCurrentTurnPlayerName)
             if (allLocked) {
                 Player currentTurnPlayer = saved.getPlayers().stream()
                         .filter(p -> Objects.equals(p.getId(), saved.getCurrentTurnPlayerId()))
@@ -427,7 +588,12 @@ public class GameService {
         return toPublicDto(saved, playerId);
     }
 
-
+    /**
+     * Creates a game and immediately joins the first player.
+     *
+     * @param username username of the first player
+     * @return updated game including the first joined player and board
+     */
     @Transactional
     public Game createGameAndJoinFirstPlayer(String username) {
         GameConfiguration config = GameConfiguration.defaultConfig();
@@ -436,8 +602,14 @@ public class GameService {
         return joinGame(game.getGameCode(), username);
     }
 
-    /*
-        DEV-only endpoints use these methods via GameDevController (@Profile dev,test).
+    /**
+     * DEV-only: Returns full board state (including ship placements) for debugging.
+     *
+     * <p>Must not be exposed in production because it reveals hidden information.
+     *
+     * @param gameCode public game identifier
+     * @param boardId board identifier
+     * @return full board state
      */
     public BoardStateDto getBoardState(String gameCode, UUID boardId) {
         Game game = gameRepository.findByGameCode(gameCode)
@@ -457,6 +629,14 @@ public class GameService {
         );
     }
 
+    /**
+     * DEV-only: Renders an ASCII representation of the board.
+     *
+     * @param gameCode public game identifier
+     * @param boardId board identifier
+     * @param showShips if {@code true}, ship positions are rendered (debugging only)
+     * @return ASCII board representation
+     */
     public String getBoardAscii(String gameCode, UUID boardId, boolean showShips) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -474,12 +654,25 @@ public class GameService {
     }
 
     // ----------------- helpers -----------------
+
+    /**
+     * Sends a "resume pending" event to clients.
+     *
+     * @param game current game
+     * @param requestedBy player who requested the resume
+     */
     private void sendEventWaiting(Game game, Player requestedBy) {
         if (messagingTemplate == null) return;
         messagingTemplate.convertAndSend("/topic/games/" + game.getGameCode() + "/events",
                 GameEventDto.gameResumePending(game, requestedBy));
     }
 
+    /**
+     * Sends a "game resumed" event to clients.
+     *
+     * @param game current game
+     * @param requestedBy player who triggered the resume step
+     */
     private void sendEventResumed(Game game, Player requestedBy) {
         if (messagingTemplate == null) return;
 
@@ -493,6 +686,12 @@ public class GameService {
                         currentTurnPlayer == null ? null : currentTurnPlayer.getUsername()));
     }
 
+    /**
+     * Returns the username of the current turn player, or null if no turn is set.
+     *
+     * @param game current game
+     * @return username of current turn player, or null
+     */
     private String getCurrentTurnPlayerName(Game game) {
         UUID id = game.getCurrentTurnPlayerId();
         if (id == null) return null;
@@ -504,6 +703,15 @@ public class GameService {
                 .orElse(null);
     }
 
+    /**
+     * Parses the fleet definition string into a flat list of ship types.
+     *
+     * <p>Expected format: {@code <count>x<size>} separated by commas, e.g. "2x2,2x3,1x4,1x5".
+     *
+     * @param config game configuration holding the fleet definition
+     * @return list of ship types (one entry per ship instance)
+     * @throws IllegalArgumentException if the fleet definition contains invalid parts or unsupported sizes
+     */
     private List<ShipType> parseFleetDefinition(GameConfiguration config) {
         String definition = config.getFleetDefinition();
         List<ShipType> result = new ArrayList<>();
@@ -540,6 +748,14 @@ public class GameService {
         return result;
     }
 
+    /**
+     * Creates a human-readable ASCII representation of a board for debugging.
+     *
+     * @param board board to render
+     * @param shotsOnThisBoard shots that targeted this board
+     * @param showShips if {@code true}, ship positions are rendered as 'S'
+     * @return ASCII board view
+     */
     private String renderBoardAscii(Board board, List<Shot> shotsOnThisBoard, boolean showShips) {
         int width = board.getWidth();
         int height = board.getHeight();
@@ -595,6 +811,15 @@ public class GameService {
         return sb.toString();
     }
 
+    /**
+     * Automatically places the complete fleet on the given board based on the configuration.
+     *
+     * <p>Uses a backtracking algorithm to guarantee a valid placement even with margin rules.
+     *
+     * @param board board to place the fleet on
+     * @param config configuration defining fleet and margin rules
+     * @throws IllegalStateException if a valid placement cannot be found for the given configuration
+     */
     private void autoPlaceFleet(Board board, GameConfiguration config) {
         int margin = config.getShipMargin();
         List<ShipType> fleetTypes = parseFleetDefinition(config);
@@ -602,11 +827,14 @@ public class GameService {
         List<Ship> fleet = new ArrayList<>();
         for (ShipType type : fleetTypes) fleet.add(new Ship(type));
 
+        // Place larger ships first to reduce the chance of dead-ends.
         fleet.sort((a, b) -> Integer.compare(b.getType().getSize(), a.getType().getSize()));
 
         List<ShipPlacement> placements = new ArrayList<>();
         Random random = new Random();
 
+        // Fleet placement uses backtracking to guarantee a valid placement under margin rules.
+        // Greedy/random placement can fail for certain fleet/board combinations.
         boolean success = placeFleetBacktracking(board, fleet, 0, margin, placements, random);
 
         if (!success) {
@@ -621,6 +849,17 @@ public class GameService {
         }
     }
 
+    /**
+     * Backtracking algorithm that attempts to place all ships on the board.
+     *
+     * @param board target board
+     * @param fleet list of ships to place
+     * @param index current index in the fleet list
+     * @param margin minimum spacing rule
+     * @param currentPlacements working list of placements (mutated during backtracking)
+     * @param random random source for shuffling candidate orders
+     * @return {@code true} if a complete valid placement is found, otherwise {@code false}
+     */
     private boolean placeFleetBacktracking(Board board,
                                            List<Ship> fleet,
                                            int index,
@@ -661,6 +900,19 @@ public class GameService {
         return false;
     }
 
+    /**
+     * Checks whether a ship can be placed while respecting the configured margin rule.
+     *
+     * <p>This method operates on a virtual list of placements used during backtracking (not the persisted board).
+     *
+     * @param board target board
+     * @param ship ship to place
+     * @param start start coordinate
+     * @param orientation placement orientation
+     * @param margin minimum spacing rule
+     * @param currentPlacements already chosen placements in the backtracking process
+     * @return {@code true} if placement is valid, otherwise {@code false}
+     */
     private boolean canPlaceShipWithMarginVirtual(Board board,
                                                   Ship ship,
                                                   Coordinate start,
@@ -703,6 +955,16 @@ public class GameService {
         return true;
     }
 
+    /**
+     * Maps a {@code Game} to a public DTO that is safe for clients.
+     *
+     * <p>Intentionally hides information that could be used for cheating:
+     * opponent ship placements are not included and only minimal state is returned.
+     *
+     * @param game current game
+     * @param requesterPlayerId requesting player id
+     * @return public view DTO for the requester
+     */
     private GamePublicDto toPublicDto(Game game, UUID requesterPlayerId) {
         Player requester = game.getPlayers().stream()
                 .filter(p -> p != null && p.getId() != null)
@@ -744,6 +1006,20 @@ public class GameService {
         );
     }
 
+    /**
+     * Maps a {@code Game} to a snapshot DTO for a specific viewer.
+     *
+     * <p>Snapshot rules:
+     * <ul>
+     *   <li>Own board: ship placements are visible.</li>
+     *   <li>Opponent board: ship placements remain hidden.</li>
+     *   <li>Shots: include shots on own board and shots fired by the viewer on opponent board.</li>
+     * </ul>
+     *
+     * @param game current game
+     * @param viewerPlayerId viewer player id
+     * @return snapshot DTO for the viewer
+     */
     private GameSnapshotDto toSnapshot(Game game, UUID viewerPlayerId) {
         Player you = game.getPlayers().stream()
                 .filter(p -> p != null && p.getId() != null)
