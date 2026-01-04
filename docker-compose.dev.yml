@@ -22,9 +22,9 @@ services:
       POSTGRES_DB: battleship
       POSTGRES_USER: appsvc
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
+    #ports:
       # optional, direct access from outside
-      - "5432:5432"
+      #- "5432:5432"
     volumes:
       - pg_dev_data:/var/lib/postgresql
     healthcheck:
