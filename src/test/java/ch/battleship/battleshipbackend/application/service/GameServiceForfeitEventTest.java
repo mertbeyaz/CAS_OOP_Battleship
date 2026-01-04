@@ -23,7 +23,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static ch.battleship.battleshipbackend.testutil.EntityTestUtils.setId;
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
@@ -31,6 +30,17 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
+/**
+ * Unit tests for {@link GameService#forfeitGame(String, UUID)} with focus on WebSocket events.
+ *
+ * <p>Focus:
+ * <ul>
+ *   <li>Forfeit is allowed only in RUNNING or PAUSED state</li>
+ *   <li>Game transitions to FINISHED and winner is set</li>
+ *   <li>GAME_FORFEITED (and GAME_FINISHED) events are broadcast to the game events topic</li>
+ *   <li>No events are sent on invalid requests</li>
+ * </ul>
+ */
 @ExtendWith(MockitoExtension.class)
 class GameServiceForfeitEventTest {
 
@@ -60,32 +70,28 @@ class GameServiceForfeitEventTest {
 
         game.addPlayer(playerA);
         game.addPlayer(playerB);
-
-        //when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
-        //when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
     @Test
     void forfeitGame_shouldFinishGame_setWinner_andSendGameForfeitedEvent() {
+        // Arrange
         when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        // Arrange
         game.setStatus(GameStatus.RUNNING);
 
         // Act
         Game updated = gameService.forfeitGame(GAME_CODE, PLAYER_A_ID);
 
-        // Assert: Game state
+        // Assert: game state
         assertEquals(GameStatus.FINISHED, updated.getStatus());
         assertEquals(PLAYER_B_ID, updated.getWinnerPlayerId());
 
-        // Assert: Events
+        // Assert: events were sent (GAME_FORFEITED + GAME_FINISHED)
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate, atLeastOnce())
                 .convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
-        // Find GAME_FORFEITED event in captured events
         GameEventDto forfeitedEvt = captor.getAllValues().stream()
                 .filter(e -> e.type() == GameEventType.GAME_FORFEITED)
                 .findFirst()
@@ -93,17 +99,16 @@ class GameServiceForfeitEventTest {
 
         assertEquals(GAME_CODE, forfeitedEvt.gameCode());
         assertEquals(GameStatus.FINISHED, forfeitedEvt.gameStatus());
-
         assertEquals("PlayerA", forfeitedEvt.payload().get("forfeitingPlayerName"));
-
         assertEquals("PlayerB", forfeitedEvt.payload().get("winnerPlayerName"));
     }
 
     @Test
     void forfeitGame_shouldAllowForfeit_whenPaused() {
+        // Arrange
         when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
-        // Arrange
+
         game.setStatus(GameStatus.PAUSED);
 
         // Act
@@ -116,8 +121,8 @@ class GameServiceForfeitEventTest {
 
     @Test
     void forfeitGame_shouldFail_whenGameNotRunningOrPaused() {
-        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
         // Arrange
+        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
         game.setStatus(GameStatus.SETUP);
 
         // Act + Assert
@@ -125,16 +130,17 @@ class GameServiceForfeitEventTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("forfeit");
 
-        // disambiguate overloaded convertAndSend(...)
+        // No events should be sent for invalid state.
+        // (use explicit arg matchers to avoid ambiguity with overloaded convertAndSend)
         verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
 
     @Test
     void forfeitGame_shouldFail_whenPlayerNotPartOfGame() {
-        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
-        //when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
         // Arrange
+        when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.of(game));
         game.setStatus(GameStatus.RUNNING);
+
         UUID outsider = UUID.fromString("20000000-0000-0000-0000-0000000000FF");
 
         // Act + Assert
@@ -142,13 +148,16 @@ class GameServiceForfeitEventTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("belong");
 
+        // No broadcast on invalid player.
         verify(messagingTemplate, never()).convertAndSend(anyString(), any(Object.class));
     }
 
     @Test
     void forfeitGame_shouldThrowNotFound_whenGameMissing() {
+        // Arrange
         when(gameRepository.findByGameCode(GAME_CODE)).thenReturn(Optional.empty());
 
+        // Act + Assert
         assertThatThrownBy(() -> gameService.forfeitGame(GAME_CODE, PLAYER_A_ID))
                 .isInstanceOf(EntityNotFoundException.class);
 

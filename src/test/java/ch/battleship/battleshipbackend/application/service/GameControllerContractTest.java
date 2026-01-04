@@ -13,11 +13,21 @@ import org.springframework.test.web.servlet.MvcResult;
 
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
-import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * Contract tests for {@link GameController}.
+ *
+ * <p>Focus:
+ * Ensure that the public game endpoint returns only the allowed fields and does not leak
+ * internal identifiers or gameplay-relevant information (anti-cheat / encapsulation).
+ *
+ * <p>This test intentionally inspects the raw JSON response to verify the API surface,
+ * independent of Java DTO mapping.
+ */
 @WebMvcTest(GameController.class)
 class GameControllerContractTest {
 
@@ -29,6 +39,7 @@ class GameControllerContractTest {
 
     @Test
     void getGame_shouldReturnOnlyPublicFields_contractTest() throws Exception {
+        // Arrange
         UUID playerId = UUID.randomUUID();
 
         GamePublicDto dto = new GamePublicDto(
@@ -42,6 +53,7 @@ class GameControllerContractTest {
 
         when(gameService.getPublicState("TEST-CODE", playerId)).thenReturn(dto);
 
+        // Act
         MvcResult result = mockMvc.perform(get("/api/games/TEST-CODE")
                         .param("playerId", playerId.toString()))
                 .andExpect(status().isOk())
@@ -49,7 +61,7 @@ class GameControllerContractTest {
 
         String json = result.getResponse().getContentAsString();
 
-        // Whitelist: Diese Felder müssen drin sein
+        // Assert (whitelist): these public fields must be present
         assertThat(json).contains("\"gameCode\"");
         assertThat(json).contains("\"status\"");
         assertThat(json).contains("\"yourBoardLocked\"");
@@ -57,7 +69,7 @@ class GameControllerContractTest {
         assertThat(json).contains("\"yourTurn\"");
         assertThat(json).contains("\"opponentName\"");
 
-        // Leaks / interne Felder dürfen NICHT drin sein
+        // Assert (blacklist): internal fields must not be present (prevent leaks / cheating)
         assertThat(json).doesNotContain("playerId");
         assertThat(json).doesNotContain("boardId");
         assertThat(json).doesNotContain("placements");
