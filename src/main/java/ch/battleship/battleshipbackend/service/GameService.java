@@ -6,6 +6,7 @@ import ch.battleship.battleshipbackend.domain.enums.Orientation;
 import ch.battleship.battleshipbackend.domain.enums.ShipType;
 import ch.battleship.battleshipbackend.domain.enums.ShotResult;
 import ch.battleship.battleshipbackend.repository.GameRepository;
+import ch.battleship.battleshipbackend.repository.GameResumeTokenRepository;
 import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.web.api.dto.*;
 import jakarta.persistence.EntityNotFoundException;
@@ -42,6 +43,7 @@ public class GameService {
     private final GameRepository gameRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final ShotRepository shotRepository;
+    private final GameResumeTokenRepository gameResumeTokenRepository;
 
     /**
      * Creates a new {@code GameService}.
@@ -52,10 +54,12 @@ public class GameService {
      */
     public GameService(GameRepository gameRepository,
                        SimpMessagingTemplate messagingTemplate,
-                       ShotRepository shotRepository) {
+                       ShotRepository shotRepository, GameResumeTokenRepository gameResumeTokenRepository) {
         this.gameRepository = gameRepository;
         this.messagingTemplate = messagingTemplate;
         this.shotRepository = shotRepository;
+        this.gameResumeTokenRepository = gameResumeTokenRepository;
+
     }
 
     /**
@@ -244,6 +248,7 @@ public class GameService {
      * @throws EntityNotFoundException if the game does not exist
      * @throws IllegalStateException if the resume operation is not allowed for the current state
      */
+    /*
     public GameResumeResponseDto resumeGame(String gameCode, UUID requestedByPlayerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
@@ -314,6 +319,112 @@ public class GameService {
                 toSnapshot(saved, requestedByPlayerId)
         );
     }
+    */
+    /**
+     * Resumes a paused game using a two-player handshake, identified by a public resume token.
+     *
+     * <p>This replaces the legacy resume flow that required {@code gameCode} + {@code playerId}.
+     * The token uniquely identifies a player within a specific game.</p>
+     *
+     * <p>Resume flow:
+     * <ul>
+     *   <li>First player confirms resume: status changes from PAUSED to WAITING and stores the confirmer id.</li>
+     *   <li>Second player confirms resume: status changes from WAITING to RUNNING and clears the confirmer id.</li>
+     * </ul>
+     *
+     * <p>This prevents a single player from unilaterally resuming a game.</p>
+     *
+     * @param token public resume token for a (game, player) pair
+     * @return response including whether the handshake is complete and a snapshot for the requester
+     * @throws EntityNotFoundException if the token or game does not exist
+     * @throws IllegalStateException if the resume operation is not allowed for the current state
+     */
+    public GameResumeResponseDto resumeGame(String token) {
+        GameResumeToken tokenEntity = gameResumeTokenRepository.findByToken(token)
+                .orElseThrow(() -> new EntityNotFoundException("Resume token not found"));
+
+        Game game = tokenEntity.getGame();
+        Player requestedBy = tokenEntity.getPlayer();
+
+        if (game == null) {
+            throw new EntityNotFoundException("Game not found for resume token");
+        }
+        if (requestedBy == null || requestedBy.getId() == null) {
+            throw new IllegalStateException("Resume token is not linked to a valid player");
+        }
+
+        UUID requestedByPlayerId = requestedBy.getId();
+
+        // Optional but nice: update lastUsedAt for debugging/analytics
+        tokenEntity.setLastUsedAt(java.time.Instant.now());
+        gameResumeTokenRepository.save(tokenEntity);
+
+        // Validate player belongs to this game (defensive check)
+        Player resolvedRequestedBy = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), requestedByPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
+
+        // Idempotent: already running -> return snapshot + current turn
+        if (game.getStatus() == GameStatus.RUNNING) {
+            return new GameResumeResponseDto(
+                    game.getGameCode(),
+                    game.getStatus(),
+                    true,
+                    resolvedRequestedBy.getUsername(),
+                    getCurrentTurnPlayerName(game),
+                    toSnapshot(game, requestedByPlayerId)
+            );
+        }
+
+        // WAITING is allowed only if it's part of the resume-handshake
+        if (game.getStatus() == GameStatus.WAITING && game.getResumeReadyPlayerId() == null) {
+            throw new IllegalStateException("WAITING game cannot be resumed (not in resume-handshake)");
+        }
+
+        // Allowed: PAUSED or WAITING (resume-handshake)
+        if (game.getStatus() != GameStatus.PAUSED && game.getStatus() != GameStatus.WAITING) {
+            throw new IllegalStateException("Can only resume a PAUSED/WAITING game");
+        }
+
+        UUID first = game.getResumeReadyPlayerId();
+
+        // Resume handshake: requires both players to confirm resume.
+        Game saved;
+        if (game.getStatus() == GameStatus.PAUSED) {
+            game.setStatus(GameStatus.WAITING);
+            game.setResumeReadyPlayerId(requestedByPlayerId);
+
+            saved = gameRepository.save(game);
+            sendEventWaiting(saved, resolvedRequestedBy);
+        } else {
+            // status == WAITING
+            if (Objects.equals(first, requestedByPlayerId)) {
+                // Same player again -> idempotent
+                saved = game;
+            } else {
+                // Second player confirms -> RUNNING
+                game.setStatus(GameStatus.RUNNING);
+                game.setResumeReadyPlayerId(null);
+
+                saved = gameRepository.save(game);
+                sendEventResumed(saved, resolvedRequestedBy);
+            }
+        }
+
+        boolean handshakeComplete = saved.getStatus() == GameStatus.RUNNING;
+        String turnName = handshakeComplete ? getCurrentTurnPlayerName(saved) : null;
+
+        return new GameResumeResponseDto(
+                saved.getGameCode(),
+                saved.getStatus(),
+                handshakeComplete,
+                resolvedRequestedBy.getUsername(),
+                turnName,
+                toSnapshot(saved, requestedByPlayerId)
+        );
+    }
+
 
     /**
      * Forfeits a running/paused game, determines the winner and notifies clients.

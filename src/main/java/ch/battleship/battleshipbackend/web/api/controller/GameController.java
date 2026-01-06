@@ -144,26 +144,26 @@ public class GameController {
     }
 
     /**
-     * Initiates or completes the resume handshake for a paused game.
+     * Resumes a paused game using a public resume token.
      *
-     * <p>The resume operation is implemented as a two-player handshake in the service layer:
-     * first player confirms -> WAITING, second player confirms -> RUNNING.
+     * <p>This endpoint replaces the legacy resume flow that required both {@code gameCode} and {@code playerId}.
+     * The token uniquely identifies a player within a game.</p>
      *
-     * @param gameCode game identifier
-     * @param request request containing the playerId who requests resume
-     * @return 200 OK with {@link GameResumeResponseDto},
-     *         404 if the game does not exist, or 400 if resume is not allowed
+     * <p>Handshake logic:
+     * <ul>
+     *   <li>PAUSED -> WAITING (first player)</li>
+     *   <li>WAITING -> RUNNING (second player)</li>
+     * </ul>
+     * The final "whose turn" information is only reliable once the game is RUNNING.</p>
      */
-    @Operation(summary = "Resume a paused game")
-    @PostMapping("/{gameCode}/resume")
-    public ResponseEntity<GameResumeResponseDto> resumeGame(@PathVariable String gameCode,
-                                                            @RequestBody PlayerActionRequest request) {
+    @Operation(summary = "Resume a paused game using a resume token")
+    @PostMapping("/resume")
+    public ResponseEntity<GameResumeResponseDto> resumeGame(@RequestBody GameResumeRequest request) {
         try {
-            GameResumeResponseDto response = gameService.resumeGame(gameCode, request.playerId());
-            return ResponseEntity.ok(response);
+            return ResponseEntity.ok(gameService.resumeGame(request.token()));
         } catch (EntityNotFoundException e) {
             return ResponseEntity.notFound().build();
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalStateException e) {
             return ResponseEntity.badRequest().build();
         }
     }
