@@ -19,6 +19,7 @@ import java.util.UUID;
  *   <li>lobby status</li>
  *   <li>the joining player's id and name</li>
  *   <li>the joining player's board state (including placements) for the setup phase</li>
+ *   <li>{@code resumeToken} to re-enter a game without providing both {@code gameCode} and {@code playerId}</li>
  * </ul>
  *
  * <p>Security note:
@@ -30,6 +31,7 @@ import java.util.UUID;
  * @param myPlayerId id of the joining player
  * @param myPlayerName username of the joining player
  * @param myBoard state of the joining player's own board (may be null)
+ * @param resumeToken public token used to resume the game for this player (may be null)
  */
 public record LobbyDto(
         String lobbyCode,
@@ -37,7 +39,8 @@ public record LobbyDto(
         String status,
         UUID myPlayerId,
         String myPlayerName,
-        BoardStateDto myBoard
+        BoardStateDto myBoard,
+        String resumeToken
 ) {
 
     /**
@@ -48,10 +51,11 @@ public record LobbyDto(
      * @param lobby domain lobby entity
      * @param myPlayer the player that joined/created the lobby (may be null)
      * @param myBoard the board belonging to {@code myPlayer} (may be null)
+     * @param resumeToken resume token for {@code myPlayer} within this game (may be null)
      * @return mapped DTO for frontend usage
      * @throws NullPointerException if {@code lobby} or {@code lobby.getGame()} is null
      */
-    public static LobbyDto from(Lobby lobby, Player myPlayer, Board myBoard) {
+    public static LobbyDto from(Lobby lobby, Player myPlayer, Board myBoard, String resumeToken) {
         Game game = lobby.getGame();
 
         return new LobbyDto(
@@ -60,7 +64,8 @@ public record LobbyDto(
                 lobby.getStatus().name(),
                 myPlayer != null ? myPlayer.getId() : null,
                 myPlayer != null ? myPlayer.getUsername() : null,
-                myBoard != null ? BoardStateDto.from(myBoard) : null
+                myBoard != null ? BoardStateDto.from(myBoard) : null,
+                resumeToken
         );
     }
 }

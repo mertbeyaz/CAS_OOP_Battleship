@@ -1,14 +1,14 @@
 package ch.battleship.battleshipbackend.web.api.controller;
 
-import ch.battleship.battleshipbackend.domain.Board;
-import ch.battleship.battleshipbackend.domain.Game;
-import ch.battleship.battleshipbackend.domain.Lobby;
-import ch.battleship.battleshipbackend.domain.Player;
+import ch.battleship.battleshipbackend.domain.*;
+import ch.battleship.battleshipbackend.repository.GameResumeTokenRepository;
 import ch.battleship.battleshipbackend.service.LobbyService;
 import ch.battleship.battleshipbackend.web.api.dto.JoinLobbyRequest;
 import ch.battleship.battleshipbackend.web.api.dto.LobbyDto;
 import io.swagger.v3.oas.annotations.Operation;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
 
 /**
  * REST controller providing lobby matchmaking endpoints.
@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.*;
  *
  * <p>DTO note:
  * The controller returns a purpose-built DTO that contains the identifiers needed by the frontend
- * (e.g. playerId and boardId). This is intentionally not a 1:1 mapping of the domain model to improve
+ * (e.g. playerId, boardId and resume token). This is intentionally not a 1:1 mapping of the domain model to improve
  * developer experience and reduce the number of client-side API calls.
  */
 @RestController
@@ -26,14 +26,12 @@ import org.springframework.web.bind.annotation.*;
 public class LobbyController {
 
     private final LobbyService lobbyService;
+    private final GameResumeTokenRepository resumeTokenRepository;
 
-    /**
-     * Creates a new {@code LobbyController}.
-     *
-     * @param lobbyService service implementing lobby join/create matchmaking logic
-     */
-    public LobbyController(LobbyService lobbyService) {
+    public LobbyController(LobbyService lobbyService,
+                           GameResumeTokenRepository resumeTokenRepository) {
         this.lobbyService = lobbyService;
+        this.resumeTokenRepository = resumeTokenRepository;
     }
 
     /**
@@ -43,7 +41,8 @@ public class LobbyController {
      * <ul>
      *   <li>lobbyCode and gameCode</li>
      *   <li>the joining player's id</li>
-     *   <li>the joining player's board id</li>
+     *   <li>the joining player's board state</li>
+     *   <li>a player-specific resume token</li>
      * </ul>
      *
      * @param request request containing the username
@@ -74,7 +73,13 @@ public class LobbyController {
                         "Board for player " + myPlayer.getId() + " not found in game " + game.getGameCode()
                 ));
 
-        // Provide playerId and boardId to the frontend to simplify further calls.
-        return LobbyDto.from(lobby, myPlayer, myBoard);
+        // Ensure exactly one token per (game, player) pair.
+        GameResumeToken tokenEntity = resumeTokenRepository
+                .findByGame_IdAndPlayer_Id(game.getId(), myPlayer.getId())
+                .orElseGet(() -> resumeTokenRepository.save(
+                        new GameResumeToken(UUID.randomUUID().toString(), game, myPlayer)
+                ));
+
+        return LobbyDto.from(lobby, myPlayer, myBoard, tokenEntity.getToken());
     }
 }
