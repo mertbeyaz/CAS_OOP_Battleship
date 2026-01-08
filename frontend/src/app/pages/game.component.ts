@@ -82,24 +82,27 @@ export class GameComponent implements OnInit, OnDestroy {
 
   @ViewChild('messagesContainer') private messagesEl?: ElementRef<HTMLDivElement>;
 
+  // Route/session
   gameCode = '';
   myPlayerId = '';
   myPlayerName = '';
-  game?: GamePublicDto;
-
-  loading = false;
-  readyLoading = false;
-  readyDone = false;
-  shotLoading = false;
-  error = '';
-  shotError = '';
-  autoLoading = false;
-  forfeitLoading = false;
-  pauseLoading = false;
   lobbyCode = '';
+
+  // Game state
+  game?: GamePublicDto;
+  readyDone = false;
   waitingForResume = false; // Due to hand-shake from the oppenent player
   forfeitedByName = '';
 
+  // Loading flags / errors
+  loading = false;
+  readyLoading = false;
+  shotLoading = false;
+  autoLoading = false;
+  forfeitLoading = false;
+  pauseLoading = false;
+  error = '';
+  shotError = '';
 
   // Board sizes (fixed to 10x10, can be overwritten by snapshot)
   boardWidth = 10;
@@ -111,19 +114,23 @@ export class GameComponent implements OnInit, OnDestroy {
   // Local shot history (no API available)
   myShotsOnOpponent = new Map<string, 'hit' | 'sunk' | 'miss'>();
   shotsOnMyBoard = new Map<string, 'hit' | 'sunk' | 'miss'>();
-
-  protected readonly Math = Math;
   private lastShotSent?: { x: number; y: number };
 
+  // WebSocket
   private stomp?: Client;
   private eventSub?: StompSubscription;
   private chatSub?: StompSubscription;
   private lobbySub: any;
 
+  // Chat
   chatMessages: ChatDto[] = [];
   chatInput = '';
 
+  protected readonly Math = Math;
 
+  // ----------------------------
+  // Lifecycle
+  // ----------------------------
   ngOnInit(): void {
     const state = (history.state as { myBoard?: BoardStateDto }) || {};
     if (state.myBoard) {
@@ -147,7 +154,6 @@ export class GameComponent implements OnInit, OnDestroy {
     });
   }
 
-
   ngOnDestroy(): void {
     this.eventSub?.unsubscribe();
     this.chatSub?.unsubscribe();
@@ -155,6 +161,9 @@ export class GameComponent implements OnInit, OnDestroy {
     this.lobbySub?.unsubscribe();
   }
 
+  // ----------------------------
+  // Helpers
+  // ----------------------------
   private scrollChatToBottom() {
     requestAnimationFrame(() => {
       const el = this.messagesEl?.nativeElement;
@@ -171,6 +180,9 @@ export class GameComponent implements OnInit, OnDestroy {
     if (result === 'SUNK') map.set(key, 'sunk');
   }
 
+  // ----------------------------
+  // Data loading
+  // ----------------------------
   loadGame() {
     this.loading = true;
     this.error = '';
@@ -205,6 +217,19 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
+  loadChatHistory() {
+    this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
+      next: (msgs) => {
+        this.chatMessages = msgs;
+        this.cdr.markForCheck();
+        this.scrollChatToBottom();
+      },
+    });
+  }
+
+  // ----------------------------
+  // Game actions
+  // ----------------------------
   isSetup() {
     return this.game?.status === 'SETUP';
   }
@@ -269,133 +294,6 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
-  cells(n: number) {
-    return Array.from({ length: n });
-  }
-
-  cellLabel(index: number, width: number) {
-    const x = index % width;
-    const y = Math.floor(index / width);
-    return `${x},${y}`;
-  }
-
-  cellStateForOpp(x: number, y: number): CellState {
-    const key = `${x},${y}`;
-    const v = this.myShotsOnOpponent.get(key);
-    if (v === 'hit') return 'hit';
-    if (v === 'sunk') return 'sunk';
-    if (v === 'miss') return 'miss';
-    return 'empty';
-  }
-
-  cellStateForMine(x: number, y: number): CellState {
-    const key = `${x},${y}`;
-    const v = this.shotsOnMyBoard.get(key);
-    if (v === 'hit') return 'hit';
-    if (v === 'sunk') return 'sunk';
-    if (v === 'miss') return 'miss';
-    if (this.myShipCoords.has(key)) return 'ship';
-    return 'empty';
-  }
-
-  connectWs() {
-    if (this.stomp || !this.gameCode) return;
-
-    this.stomp = new Client({
-      webSocketFactory: () => new SockJS('/ws'),
-      reconnectDelay: 5000,
-    });
-
-    this.stomp.onConnect = () => {
-      this.zone.run(() => {
-        this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
-        this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
-
-        if (this.lobbyCode) {
-          this.lobbySub = this.stomp!.subscribe(`/topic/lobbies/${this.lobbyCode}/events`, (msg) => {
-            const evt = JSON.parse(msg.body);
-            if (evt.type === 'LOBBY_FULL') {
-              this.loadGame();
-            }
-          });
-        }
-      });
-    };
-
-    this.stomp.activate();
-  }
-
-
-  handleChat(msg: IMessage) {
-    const dto = JSON.parse(msg.body) as ChatDto;
-    this.zone.run(() => {
-      this.chatMessages = [...this.chatMessages, dto];
-      this.cdr.markForCheck();
-      this.scrollChatToBottom();
-    });
-  }
-
-  handleEvent(msg: IMessage) {
-    const evt = JSON.parse(msg.body) as GameEventDto;
-
-    this.zone.run(() => {
-      if (evt.type === 'SHOT_FIRED') {
-        const { x, y, result } = evt.payload || {};
-        if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
-          this.applyShot('me', x, y, result);
-        }
-        this.loadGame();
-        return;
-      }
-
-      if (evt.type === 'GAME_FORFEITED') {
-        const { forfeitingPlayerName } = evt.payload || {};
-        this.forfeitedByName = forfeitingPlayerName || '';
-        this.loadGame();
-        return;
-      }
-
-      if ([
-        'BOARD_CONFIRMED',
-        'GAME_STARTED',
-        'TURN_CHANGED',
-        'GAME_FINISHED',
-        'GAME_FORFEITED',
-        'GAME_PAUSED',
-        'GAME_RESUMED'
-      ].includes(evt.type)) {
-        this.loadGame();
-        return;
-      }
-    });
-
-
-
-  }
-
-  loadChatHistory() {
-    this.http.get<ChatDto[]>(`${API_BASE_URL}/games/${this.gameCode}/chat/messages`).subscribe({
-      next: (msgs) => {
-        this.chatMessages = msgs;
-        this.cdr.markForCheck();
-        this.scrollChatToBottom();
-      },
-    });
-  }
-
-  sendChat() {
-    if (!this.chatInput.trim()) return;
-    this.stomp?.publish({
-      destination: `/app/games/${this.gameCode}/chat`,
-      body: JSON.stringify({
-        senderId: this.myPlayerId,
-        senderName: this.myPlayerName,
-        message: this.chatInput.trim(),
-      }),
-    });
-    this.chatInput = '';
-  }
-
   autoPlacement() {
     if (!this.isSetup() || this.readyDone || !this.myPlayerId) return;
     this.autoLoading = true;
@@ -418,19 +316,6 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
-  buildMyBoardMaps() {
-    if (!this.myBoardState) return;
-    this.myShipCoords.clear();
-
-    for (const s of this.myBoardState.shipPlacements) {
-      for (let i = 0; i < s.size; i++) {
-        const x = s.orientation === 'HORIZONTAL' ? s.startX + i : s.startX;
-        const y = s.orientation === 'VERTICAL' ? s.startY + i : s.startY;
-        this.myShipCoords.add(`${x},${y}`);
-      }
-    }
-  }
-
   forfeitGame() {
     if (!this.gameCode || !this.myPlayerId) return;
     this.forfeitLoading = true;
@@ -445,6 +330,25 @@ export class GameComponent implements OnInit, OnDestroy {
         },
         error: () => {
           this.forfeitLoading = false;
+          this.cdr.markForCheck();
+        },
+      });
+  }
+
+  pauseGame() {
+    if (!this.gameCode || !this.myPlayerId) return;
+    this.pauseLoading = true;
+
+    this.http
+      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/pause`, { playerId: this.myPlayerId })
+      .subscribe({
+        next: (g) => {
+          this.game = g;
+          this.pauseLoading = false;
+          this.cdr.markForCheck();
+        },
+        error: () => {
+          this.pauseLoading = false;
           this.cdr.markForCheck();
         },
       });
@@ -488,22 +392,138 @@ export class GameComponent implements OnInit, OnDestroy {
       });
   }
 
-  pauseGame() {
-    if (!this.gameCode || !this.myPlayerId) return;
-    this.pauseLoading = true;
+  // ----------------------------
+  // Board helpers
+  // ----------------------------
+  buildMyBoardMaps() {
+    if (!this.myBoardState) return;
+    this.myShipCoords.clear();
 
-    this.http
-      .post<GamePublicDto>(`${API_BASE_URL}/games/${this.gameCode}/pause`, { playerId: this.myPlayerId })
-      .subscribe({
-        next: (g) => {
-          this.game = g;
-          this.pauseLoading = false;
-          this.cdr.markForCheck();
-        },
-        error: () => {
-          this.pauseLoading = false;
-          this.cdr.markForCheck();
-        },
+    for (const s of this.myBoardState.shipPlacements) {
+      for (let i = 0; i < s.size; i++) {
+        const x = s.orientation === 'HORIZONTAL' ? s.startX + i : s.startX;
+        const y = s.orientation === 'VERTICAL' ? s.startY + i : s.startY;
+        this.myShipCoords.add(`${x},${y}`);
+      }
+    }
+  }
+
+  cells(n: number) {
+    return Array.from({ length: n });
+  }
+
+  cellLabel(index: number, width: number) {
+    const x = index % width;
+    const y = Math.floor(index / width);
+    return `${x},${y}`;
+  }
+
+  cellStateForOpp(x: number, y: number): CellState {
+    const key = `${x},${y}`;
+    const v = this.myShotsOnOpponent.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
+    return 'empty';
+  }
+
+  cellStateForMine(x: number, y: number): CellState {
+    const key = `${x},${y}`;
+    const v = this.shotsOnMyBoard.get(key);
+    if (v === 'hit') return 'hit';
+    if (v === 'sunk') return 'sunk';
+    if (v === 'miss') return 'miss';
+    if (this.myShipCoords.has(key)) return 'ship';
+    return 'empty';
+  }
+
+  // ----------------------------
+  // WebSocket
+  // ----------------------------
+  connectWs() {
+    if (this.stomp || !this.gameCode) return;
+
+    this.stomp = new Client({
+      webSocketFactory: () => new SockJS('/ws'),
+      reconnectDelay: 5000,
+    });
+
+    this.stomp.onConnect = () => {
+      this.zone.run(() => {
+        this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
+        this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
+
+        if (this.lobbyCode) {
+          this.lobbySub = this.stomp!.subscribe(`/topic/lobbies/${this.lobbyCode}/events`, (msg) => {
+            const evt = JSON.parse(msg.body);
+            if (evt.type === 'LOBBY_FULL') {
+              this.loadGame();
+            }
+          });
+        }
       });
+    };
+
+    this.stomp.activate();
+  }
+
+  handleChat(msg: IMessage) {
+    const dto = JSON.parse(msg.body) as ChatDto;
+    this.zone.run(() => {
+      this.chatMessages = [...this.chatMessages, dto];
+      this.cdr.markForCheck();
+      this.scrollChatToBottom();
+    });
+  }
+
+  handleEvent(msg: IMessage) {
+    const evt = JSON.parse(msg.body) as GameEventDto;
+
+    this.zone.run(() => {
+      if (evt.type === 'SHOT_FIRED') {
+        const { x, y, result } = evt.payload || {};
+        if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
+          this.applyShot('me', x, y, result);
+        }
+        this.loadGame();
+        return;
+      }
+
+      if (evt.type === 'GAME_FORFEITED') {
+        const { forfeitingPlayerName } = evt.payload || {};
+        this.forfeitedByName = forfeitingPlayerName || '';
+        this.loadGame();
+        return;
+      }
+
+      if ([
+        'BOARD_CONFIRMED',
+        'GAME_STARTED',
+        'TURN_CHANGED',
+        'GAME_FINISHED',
+        'GAME_FORFEITED',
+        'GAME_PAUSED',
+        'GAME_RESUMED'
+      ].includes(evt.type)) {
+        this.loadGame();
+        return;
+      }
+    });
+  }
+
+  // ----------------------------
+  // Chat
+  // ----------------------------
+  sendChat() {
+    if (!this.chatInput.trim()) return;
+    this.stomp?.publish({
+      destination: `/app/games/${this.gameCode}/chat`,
+      body: JSON.stringify({
+        senderId: this.myPlayerId,
+        senderName: this.myPlayerName,
+        message: this.chatInput.trim(),
+      }),
+    });
+    this.chatInput = '';
   }
 }
