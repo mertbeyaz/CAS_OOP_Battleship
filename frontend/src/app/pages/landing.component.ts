@@ -24,6 +24,7 @@ type LobbyDto = {
       size: number;
     }>;
   } | null;
+  resumeToken?: string;
 };
 
 type JoinGameResponseDto = {
@@ -49,6 +50,11 @@ type ResumeResponseDto = {
   };
 };
 
+type ResumePlayer = {
+  playerId: string;
+  playerName: string;
+};
+
 @Component({
   standalone: true,
   selector: 'app-landing',
@@ -56,9 +62,6 @@ type ResumeResponseDto = {
   templateUrl: './landing.component.html',
   styleUrls: ['./landing.component.scss'],
 })
-/**
- * Landing page: quick play or join a game by code, including resume support.
- */
 export class LandingComponent {
   private http = inject(HttpClient);
   private router = inject(Router);
@@ -71,41 +74,46 @@ export class LandingComponent {
   // Join by code form state
   gameCode = '';
   usernameJoin = '';
+  resumeTokenJoin = '';
   loadingJoin = false;
   errorJoin = '';
 
   // ----------------------------
   // Local storage helpers
   // ----------------------------
-  /**
-   * Builds a localStorage key for a game+username pair.
-   * @param gameCode Game code entered by the user.
-   * @param username Username input.
-   * @returns A stable key used for localStorage.
-   */
   private playerKey(gameCode: string, username: string) {
     return `battleship:${gameCode}:${username}`;
   }
 
-  /**
-   * Persists a player mapping for resume.
-   * @param gameCode Game code.
-   * @param username Username input.
-   * @param playerId Player ID returned by backend.
-   * @param playerName Canonical player name.
-   */
+  private tokenKey(gameCode: string) {
+    return `resume:${gameCode}`;
+  }
+
+  private resumePlayerKey(token: string) {
+    return `resumePlayer:${token}`;
+  }
+
   private savePlayer(gameCode: string, username: string, playerId: string, playerName: string) {
     localStorage.setItem(this.playerKey(gameCode, username), JSON.stringify({ playerId, playerName }));
   }
 
-  /**
-   * Loads a previously stored player mapping if available.
-   * @param gameCode Game code.
-   * @param username Username input.
-   * @returns Stored player mapping or null.
-   */
-  private loadPlayer(gameCode: string, username: string): { playerId: string; playerName: string } | null {
+  private saveResumeToken(gameCode: string, resumeToken?: string) {
+    if (!resumeToken) return;
+    localStorage.setItem(this.tokenKey(gameCode), resumeToken);
+  }
+
+  private saveResumePlayer(resumeToken?: string, playerId?: string, playerName?: string) {
+    if (!resumeToken || !playerId || !playerName) return;
+    localStorage.setItem(this.resumePlayerKey(resumeToken), JSON.stringify({ playerId, playerName }));
+  }
+
+  private loadPlayer(gameCode: string, username: string): ResumePlayer | null {
     const raw = localStorage.getItem(this.playerKey(gameCode, username));
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  private loadResumePlayer(resumeToken: string): ResumePlayer | null {
+    const raw = localStorage.getItem(this.resumePlayerKey(resumeToken));
     return raw ? JSON.parse(raw) : null;
   }
 
@@ -130,12 +138,16 @@ export class LandingComponent {
         next: (res) => {
           this.loadingQuick = false;
           this.savePlayer(res.gameCode, res.myPlayerName, res.myPlayerId, res.myPlayerName);
+          this.saveResumeToken(res.gameCode, res.resumeToken);
+          this.saveResumePlayer(res.resumeToken, res.myPlayerId, res.myPlayerName);
+
           this.router.navigate(['/game'], {
             queryParams: {
               gameCode: res.gameCode,
               playerId: res.myPlayerId,
               playerName: res.myPlayerName,
               lobbyCode: res.lobbyCode,
+              resumeToken: res.resumeToken,
             },
             state: { myBoard: res.myBoard },
           });
@@ -148,67 +160,78 @@ export class LandingComponent {
   }
 
   /**
-   * Joins a game by code. If the input is a UUID, attempts resume (PAUSED only).
-   * Falls back to normal join when no stored player info exists.
+   * Join by:
+   * - gameCode + resumeToken (resume, only if PAUSED)
+   * - gameCode + username (normal join)
    */
   joinByCode() {
     const code = this.gameCode.trim();
-    const input = this.usernameJoin.trim();
-    if (!code || !input) {
-      this.errorJoin = 'Bitte Game Code und Username eingeben.';
+    const name = this.usernameJoin.trim();
+    const token = this.resumeTokenJoin.trim();
+
+    if (!code) {
+      this.errorJoin = 'Bitte Game Code eingeben.';
       return;
     }
+
     this.loadingJoin = true;
     this.errorJoin = '';
 
-    // 1) UUID -> resume (only if PAUSED)
-    const uuidRe = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (uuidRe.test(input)) {
+    // 1) Resume by token
+    if (token) {
       this.http
-        .get<GamePublicDto>(`${API_BASE_URL}/games/${code}?playerId=${input}`)
+        .post<ResumeResponseDto>(`${API_BASE_URL}/games/resume`, { token })
         .subscribe({
-          next: (g) => {
-            if (g.status !== 'PAUSED') {
+          next: (res) => {
+            const resumePlayer = this.loadResumePlayer(token);
+            if (!resumePlayer) {
               this.loadingJoin = false;
-              this.errorJoin = 'Resume nur möglich, wenn Spiel PAUSED ist.';
+              this.errorJoin = 'Resume-Token unbekannt. Bitte auf demselben Browser/Device starten.';
               return;
             }
 
-            this.http
-              .post<ResumeResponseDto>(`${API_BASE_URL}/games/${code}/resume`, { playerId: input })
-              .subscribe({
-                next: (res) => {
-                  const nameFromResume = res.snapshot?.youName ?? input;
-                  this.loadingJoin = false;
-                  this.router.navigate(['/game'], {
-                    queryParams: { gameCode: code, playerId: input, playerName: nameFromResume },
-                  });
-                },
-                error: () => {
-                  this.loadingJoin = false;
-                  this.errorJoin = 'Resume fehlgeschlagen.';
-                },
-              });
+            this.loadingJoin = false;
+            this.router.navigate(['/game'], {
+              queryParams: {
+                gameCode: code,
+                playerId: resumePlayer.playerId,
+                playerName: resumePlayer.playerName,
+                resumeToken: token,
+              },
+            });
           },
           error: () => {
             this.loadingJoin = false;
-            this.errorJoin = 'Spiel konnte nicht geladen werden.';
+            this.errorJoin = 'Resume nur möglich, wenn Spiel PAUSED ist.';
           },
         });
 
       return;
     }
 
-    // 2) Known player -> check status / resume if needed
-    const existing = this.loadPlayer(code, input);
+    // 2) Normal join by username
+    if (!name) {
+      this.loadingJoin = false;
+      this.errorJoin = 'Bitte Username eingeben.';
+      return;
+    }
+
+    const existing = this.loadPlayer(code, name);
     if (existing) {
       this.http
         .get<GamePublicDto>(`${API_BASE_URL}/games/${code}?playerId=${existing.playerId}`)
         .subscribe({
           next: (g) => {
             if (g.status === 'PAUSED') {
+              const savedToken = localStorage.getItem(this.tokenKey(code));
+              if (!savedToken) {
+                this.loadingJoin = false;
+                this.errorJoin = 'Resume-Token fehlt.';
+                return;
+              }
+
               this.http
-                .post<GamePublicDto>(`${API_BASE_URL}/games/${code}/resume`, { playerId: existing.playerId })
+                .post<ResumeResponseDto>(`${API_BASE_URL}/games/resume`, { token: savedToken })
                 .subscribe({
                   next: () => {
                     this.loadingJoin = false;
@@ -217,6 +240,7 @@ export class LandingComponent {
                         gameCode: code,
                         playerId: existing.playerId,
                         playerName: existing.playerName,
+                        resumeToken: savedToken,
                       },
                     });
                   },
@@ -245,13 +269,13 @@ export class LandingComponent {
       return;
     }
 
-    // 3) Normal join
     this.http
-      .post<JoinGameResponseDto>(`${API_BASE_URL}/games/${code}/join`, { username: input })
+      .post<JoinGameResponseDto>(`${API_BASE_URL}/games/${code}/join`, { username: name })
       .subscribe({
         next: (res) => {
           this.loadingJoin = false;
           this.savePlayer(res.gameCode, res.playerName, res.playerId, res.playerName);
+
           this.router.navigate(['/game'], {
             queryParams: {
               gameCode: res.gameCode,

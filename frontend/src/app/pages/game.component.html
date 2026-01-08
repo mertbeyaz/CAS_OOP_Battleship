@@ -11,11 +11,16 @@
     <div class="shell">
       <header class="topbar">
         <div>
+          <p class="label">Resume Token</p>
+          <p class="value">{{ resumeToken }}</p>
+        </div>
+
+        <div>
           <p class="label">Game Code</p>
           <p class="value">{{ game.gameCode }}</p>
         </div>
         <div *ngIf="game.status === 'WAITING' && waitingForResume" class="pill warn">
-          Resume gedrückt – warte auf Gegner...
+          Resume gedrÇ¬ckt ƒ?" warte auf Gegner...
         </div>
         <div>
           <p class="label">Status</p>
@@ -45,7 +50,7 @@
           <tr>
             <td>
               {{ myPlayerName }} <span class="tag">(du)</span>
-              <span class="uuid" title="Diese ID wird benötigt, um ein pausiertes Spiel später wieder aufzunehmen.">
+              <span class="uuid">
                 ({{ myPlayerId }})
               </span>
             </td>
@@ -109,6 +114,13 @@
               {{ cellLabel(i, boardWidth) }}
             </span>
           </div>
+
+          <div class="legend">
+            <span class="legend-item"><span class="legend-swatch miss"></span>Miss</span>
+            <span class="legend-item"><span class="legend-swatch hit"></span>Hit</span>
+            <span class="legend-item"><span class="legend-swatch sunk"></span>Sunk</span>
+          </div>
+
           <p *ngIf="shotError" class="error">{{ shotError }}</p>
         </div>
 
@@ -122,10 +134,13 @@
               <span class="text">{{ m.message }}</span>
             </div>
           </div>
-          <form (ngSubmit)="sendChat()" class="chat-form">
-            <input [(ngModel)]="chatInput" name="chatInput" autocomplete="off" placeholder="Nachricht..." />
-            <button type="submit" [disabled]="!chatInput.trim()">Senden</button>
-          </form>
+
+          <div class="chat-footer">
+            <form (ngSubmit)="sendChat()" class="chat-form">
+              <input [(ngModel)]="chatInput" name="chatInput" autocomplete="off" placeholder="Nachricht..." />
+              <button type="submit" [disabled]="!chatInput.trim()">Senden</button>
+            </form>
+          </div>
         </section>
       </section>
     </div>
