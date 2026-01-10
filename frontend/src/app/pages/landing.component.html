@@ -1,6 +1,8 @@
 <main class="landing">
+  <!-- Ambient background layer -->
   <div class="bg"></div>
   <div class="shell">
+    <!-- Hero header -->
     <header class="hero">
       <div>
         <p class="eyebrow">Multiplayer</p>
@@ -10,11 +12,13 @@
       <div class="badge">v1</div>
     </header>
 
+    <!-- Action panels -->
     <div class="panels">
+      <!-- Quick play -->
       <section class="card">
         <div class="card-head">
           <h2>Schnelles Spiel</h2>
-          <p class="hint">Füllt automatisch eine Lobby.</p>
+          <p class="hint">FǬllt automatisch eine Lobby.</p>
         </div>
         <form (ngSubmit)="quickPlay()" #fQuick="ngForm" class="form">
           <label>
@@ -36,6 +40,7 @@
         <p *ngIf="errorQuick" class="error">{{ errorQuick }}</p>
       </section>
 
+      <!-- Join by code -->
       <section class="card">
         <div class="card-head">
           <h2>Spiel beitreten</h2>
@@ -50,7 +55,7 @@
               required
               autocomplete="off"
               [disabled]="loadingJoin"
-              placeholder="Code einfügen"
+              placeholder="Code einfǬgen"
             />
           </label>
           <label>

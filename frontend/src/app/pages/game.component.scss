@@ -1,3 +1,4 @@
+/* Page frame and theme */
 :host {
   display: block;
   min-height: 100vh;
@@ -6,11 +7,13 @@
   font-family: 'Inter', system-ui, sans-serif;
 }
 
+/* Outer container spacing */
 .game {
   position: relative;
   padding: 32px 12px 48px;
 }
 
+/* Atmospheric background glow */
 .bg {
   position: absolute;
   inset: 0;
@@ -22,6 +25,7 @@
   z-index: 0;
 }
 
+/* Main column layout */
 .shell {
   position: relative;
   z-index: 1;
@@ -32,6 +36,7 @@
   gap: 16px;
 }
 
+/* Status/header grid */
 .topbar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -42,6 +47,7 @@
 .label { margin: 0; font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.14em; }
 .value { margin: 2px 0 0; font-weight: 700; color: #f8fafc; }
 
+/* Status pill styling */
 .pill {
   justify-self: end;
   padding: 8px 12px;
@@ -52,12 +58,14 @@
 .pill.success { background: rgba(34, 197, 94, 0.12); color: #4ade80; }
 .pill.warn { background: rgba(249, 115, 22, 0.12); color: #fb923c; }
 
+/* Two-board layout */
 .boards-grid {
   display: grid;
   gap: 14px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* Shared panel styling */
 .panel {
   background: rgba(17, 24, 39, 0.9);
   border: 1px solid #1f2937;
@@ -95,6 +103,7 @@ button.forfeit {
   border-color: #7f1d1d;
 }
 
+/* Lobby/player table */
 .players-table {
   width: 100%;
   border-collapse: collapse;
@@ -120,6 +129,7 @@ button.forfeit {
   margin-bottom: 6px;
 }
 
+/* Board grid and cells */
 .board .grid {
   display: grid;
   grid-template-columns: repeat(var(--w), 1fr);
@@ -144,10 +154,12 @@ button.forfeit {
 .cell.clickable { cursor: pointer; }
 .cell.disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Chat panel layout */
 .panel.chat {
   grid-column: 1 / 2;
 }
 
+/* Chat message list */
 .messages {
   display: flex;
   flex-direction: column;
@@ -180,6 +192,7 @@ button.forfeit {
   margin-bottom: 2px;
 }
 
+/* Chat input row */
 .chat-form {
   display: flex;
   gap: 8px;
@@ -191,6 +204,7 @@ button.forfeit {
   width: 100%;
 }
 
+/* Legend labels for cell states */
 .legend {
   display: flex;
   gap: 10px;
@@ -223,6 +237,7 @@ button.forfeit {
 .legend-swatch.hit  { background: rgba(239, 68, 68, 0.10); border-color: #ef4444; }
 .legend-swatch.sunk { background: rgba(220, 38, 38, 0.45); border-color: #dc2626; }
 
+/* Chat footer layout */
 .chat-footer {
   display: flex;
   gap: 12px;
@@ -238,6 +253,7 @@ button.forfeit {
 .loader, .info { color: #cbd5e1; }
 .error { color: #fca5a5; margin-top: 8px; font-size: 13px; }
 
+/* Responsive layout for narrow viewports */
 @media (max-width: 900px) {
   .boards-grid {
     grid-template-columns: 1fr;
