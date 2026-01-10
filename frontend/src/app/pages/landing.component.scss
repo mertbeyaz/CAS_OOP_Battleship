@@ -1,3 +1,4 @@
+/* Page frame and theme */
 :host {
   display: block;
   min-height: 100vh;
@@ -6,6 +7,7 @@
   font-family: 'Inter', system-ui, sans-serif;
 }
 
+/* Centered layout wrapper */
 .landing {
   position: relative;
   min-height: 100vh;
@@ -15,6 +17,7 @@
   justify-content: center;
 }
 
+/* Atmospheric background glow */
 .bg {
   position: absolute;
   inset: 0;
@@ -26,6 +29,7 @@
   z-index: 0;
 }
 
+/* Main column layout */
 .shell {
   position: relative;
   z-index: 1;
@@ -35,6 +39,7 @@
   gap: 24px;
 }
 
+/* Hero header row */
 .hero {
   display: flex;
   align-items: flex-start;
@@ -62,6 +67,7 @@ h1 {
   font-size: 15px;
 }
 
+/* Highlighted status badge */
 .badge {
   border: 1px solid #374151;
   background: linear-gradient(120deg, rgba(59, 130, 246, 0.25), rgba(16, 185, 129, 0.25));
@@ -71,12 +77,14 @@ h1 {
   font-weight: 600;
 }
 
+/* Card grid */
 .panels {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
+/* Shared card styling */
 .card {
   background: rgba(17, 24, 39, 0.9);
   border: 1px solid #1f2937;
@@ -101,18 +109,21 @@ h2 {
   font-size: 13px;
 }
 
+/* Base form layout */
 .form {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
+/* Responsive two-column form */
 .form.two-col {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
 }
 
+/* Input labels */
 label {
   display: flex;
   flex-direction: column;
@@ -121,6 +132,7 @@ label {
   font-size: 14px;
 }
 
+/* Input styling */
 input {
   background: #0f172a;
   border: 1px solid #1f2937;
@@ -136,6 +148,7 @@ input:focus {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
 }
 
+/* Button styling */
 button {
   border: none;
   border-radius: 10px;
@@ -163,6 +176,7 @@ button:not(:disabled):hover {
   transform: translateY(-1px);
 }
 
+/* Error messaging */
 .error {
   margin-top: 8px;
   color: #fca5a5;

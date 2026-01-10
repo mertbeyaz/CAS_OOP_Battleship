@@ -1,14 +1,19 @@
 <ng-container *ngIf="loading; else loaded">
+  <!-- Loading state -->
   <div class="loader">Lade Spiel...</div>
 </ng-container>
 
 <ng-template #loaded>
+  <!-- Error / empty states -->
   <p *ngIf="error" class="error">{{ error }}</p>
   <p *ngIf="!game && !error" class="info">Kein Spiel geladen.</p>
 
+  <!-- Main game UI -->
   <main class="game" *ngIf="game">
+    <!-- Background layer -->
     <div class="bg"></div>
     <div class="shell">
+      <!-- Status header -->
       <header class="topbar">
         <div>
           <p class="label">Resume Token</p>
@@ -20,7 +25,7 @@
           <p class="value">{{ game.gameCode }}</p>
         </div>
         <div *ngIf="game.status === 'WAITING' && waitingForResume" class="pill warn">
-          Resume gedrÇ¬ckt ƒ?" warte auf Gegner...
+          Resume gedrÇÎ¶ªckt ’'?" warte auf Gegner...
         </div>
         <div>
           <p class="label">Status</p>
@@ -37,6 +42,7 @@
         </div>
       </header>
 
+      <!-- Players table -->
       <section class="panel players">
         <table class="players-table">
           <thead>
@@ -50,9 +56,6 @@
           <tr>
             <td>
               {{ myPlayerName }} <span class="tag">(du)</span>
-              <span class="uuid">
-                ({{ myPlayerId }})
-              </span>
             </td>
             <td>{{ game.yourBoardLocked ? 'Ready' : 'Wartet...' }}</td>
             <td>
@@ -82,7 +85,9 @@
         </table>
       </section>
 
+      <!-- Boards + chat layout -->
       <section class="boards-grid">
+        <!-- Your board -->
         <div class="panel board">
           <div class="panel-head">
             <h3>Dein Board</h3>
@@ -98,6 +103,7 @@
           </div>
         </div>
 
+        <!-- Opponent board -->
         <div class="panel board">
           <div class="panel-head">
             <h3>Gegner-Board</h3>
@@ -115,6 +121,7 @@
             </span>
           </div>
 
+          <!-- Cell legend -->
           <div class="legend">
             <span class="legend-item"><span class="legend-swatch miss"></span>Miss</span>
             <span class="legend-item"><span class="legend-swatch hit"></span>Hit</span>
@@ -124,6 +131,7 @@
           <p *ngIf="shotError" class="error">{{ shotError }}</p>
         </div>
 
+        <!-- Chat -->
         <section class="panel chat">
           <div class="panel-head"><h3>Chat</h3></div>
           <div class="messages" #messagesContainer>
