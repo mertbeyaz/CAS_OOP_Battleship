@@ -256,4 +256,66 @@ public record GameEventDto(
                 )
         );
     }
+
+    /**
+     * Creates an event indicating that a player has disconnected.
+     *
+     * <p>This event is sent when a WebSocket session is closed (browser closed,
+     * network failure, etc.). The game will automatically be moved to WAITING status
+     * and both players will need to use their resume tokens to rejoin.
+     *
+     * <p>Payload contains:
+     * <ul>
+     *   <li>{@code disconnectedPlayerName} - username of the disconnected player</li>
+     *   <li>{@code message} - user-friendly message explaining what happened</li>
+     * </ul>
+     *
+     * @param game game instance
+     * @param disconnectedPlayer player who lost connection
+     * @return event DTO
+     */
+    public static GameEventDto playerDisconnected(Game game, Player disconnectedPlayer) {
+        return new GameEventDto(
+                GameEventType.PLAYER_DISCONNECTED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "disconnectedPlayerName", disconnectedPlayer.getUsername(),
+                        "message", "Spieler " + disconnectedPlayer.getUsername() +
+                                " hat die Verbindung verloren. Das Spiel wurde pausiert."
+                )
+        );
+    }
+
+    /**
+     * Creates an event indicating that a player has reconnected.
+     *
+     * <p>This event is sent when a previously disconnected player subscribes to
+     * game events again. Note that this does NOT automatically resume the game -
+     * both players still need to use their resume tokens to continue playing.
+     *
+     * <p>Payload contains:
+     * <ul>
+     *   <li>{@code reconnectedPlayerName} - username of the reconnected player</li>
+     *   <li>{@code message} - user-friendly message</li>
+     * </ul>
+     *
+     * @param game game instance
+     * @param reconnectedPlayer player who reconnected
+     * @return event DTO
+     */
+    public static GameEventDto playerReconnected(Game game, Player reconnectedPlayer) {
+        return new GameEventDto(
+                GameEventType.PLAYER_RECONNECTED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of(
+                        "reconnectedPlayerName", reconnectedPlayer.getUsername(),
+                        "message", "Spieler " + reconnectedPlayer.getUsername() +
+                                " ist wieder verbunden."
+                )
+        );
+    }
 }
