@@ -1,5 +1,8 @@
 package ch.battleship.battleshipbackend.web.api.controller;
 
+import ch.battleship.battleshipbackend.domain.Game;
+import ch.battleship.battleshipbackend.domain.PlayerConnection;
+import ch.battleship.battleshipbackend.repository.PlayerConnectionRepository;
 import ch.battleship.battleshipbackend.service.GameService;
 import ch.battleship.battleshipbackend.web.api.dto.BoardStateDto;
 import io.swagger.v3.oas.annotations.Operation;
@@ -9,6 +12,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -30,14 +35,18 @@ import java.util.UUID;
 public class GameDevController {
 
     private final GameService gameService;
+    private final PlayerConnectionRepository connectionRepository;
 
     /**
      * Creates a new {@code GameDevController}.
      *
      * @param gameService service providing dev-only helper methods
+     * @param connectionRepository repository for accessing player connections
      */
-    public GameDevController(GameService gameService) {
+    public GameDevController(GameService gameService,
+                             PlayerConnectionRepository connectionRepository) {
         this.gameService = gameService;
+        this.connectionRepository = connectionRepository;
     }
 
     /**
@@ -95,4 +104,70 @@ public class GameDevController {
             return ResponseEntity.badRequest().build();
         }
     }
+
+    /**
+     * Returns the connection status of all players in a game.
+     *
+     * <p>Development-only endpoint to inspect WebSocket connection states during
+     * testing and debugging. Shows which players are currently connected, when they
+     * were last seen, and their session IDs.
+     *
+     * <p>Use cases:
+     * <ul>
+     *   <li>Verify that disconnect detection is working correctly</li>
+     *   <li>Debug reconnection issues</li>
+     *   <li>Monitor connection states during testing</li>
+     * </ul>
+     *
+     * @param gameCode game identifier
+     * @return 200 OK with list of {@link ConnectionStatusDto},
+     *         404 if the game does not exist
+     */
+    @Operation(summary = "Get player connection status for a game")
+    @GetMapping("/{gameCode}/connections")
+    public ResponseEntity<List<ConnectionStatusDto>> getConnectionStatus(@PathVariable String gameCode) {
+        try {
+            // Load game to verify it exists
+            Game game = gameService.getByGameCode(gameCode)
+                    .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+            // Get all connections for this game
+            List<PlayerConnection> connections = connectionRepository.findByGame(game);
+
+            // Map to DTOs
+            List<ConnectionStatusDto> status = connections.stream()
+                    .map(conn -> new ConnectionStatusDto(
+                            conn.getPlayer().getUsername(),
+                            conn.getPlayer().getId(),
+                            conn.isConnected(),
+                            conn.getLastSeen(),
+                            conn.getSessionId()
+                    ))
+                    .toList();
+
+            return ResponseEntity.ok(status);
+        } catch (EntityNotFoundException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * DTO for connection status response.
+     *
+     * <p>Contains all relevant information about a player's connection state
+     * for debugging and monitoring purposes.
+     *
+     * @param playerName username of the player
+     * @param playerId unique identifier of the player
+     * @param connected whether the player is currently connected
+     * @param lastSeen timestamp of last activity
+     * @param sessionId WebSocket session identifier (may be null)
+     */
+    public record ConnectionStatusDto(
+            String playerName,
+            UUID playerId,
+            boolean connected,
+            Instant lastSeen,
+            String sessionId
+    ) {}
 }
