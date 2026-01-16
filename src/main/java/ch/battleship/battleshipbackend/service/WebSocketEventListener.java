@@ -32,16 +32,25 @@ import java.util.UUID;
  * <ul>
  *   <li>Track player connections when they subscribe to game event topics</li>
  *   <li>Detect disconnections when WebSocket sessions close</li>
- *   <li>Move games to WAITING status when a player disconnects</li>
+ *   <li>Move games to PAUSED status when a player disconnects</li>
  *   <li>Notify remaining players about connection status changes</li>
  *   <li>Track reconnections for resume flows</li>
  * </ul>
  *
  * <p>Integration with resume flow:
- * When a player disconnects, the game is moved to WAITING status. Both players must then
+ * When a player disconnects, the game is moved to PAUSED status. Both players must then
  * use their resume tokens to rejoin the game. This listener detects when players reconnect
  * via subscription events, but does not automatically resume games - that requires explicit
  * resume token validation via the GameService.
+ *
+ * <p><b>Status Transitions on Disconnect:</b>
+ * <ul>
+ *   <li>RUNNING → PAUSED (requires resume tokens to continue)</li>
+ *   <li>SETUP → PAUSED (requires resume tokens to continue setup)</li>
+ *   <li>PAUSED → PAUSED (already paused, no change)</li>
+ *   <li>WAITING → remains WAITING (not started yet)</li>
+ *   <li>FINISHED → remains FINISHED (game over)</li>
+ * </ul>
  */
 @Component
 @RequiredArgsConstructor
@@ -110,9 +119,16 @@ public class WebSocketEventListener {
      *   <li>Session timeout</li>
      * </ul>
      *
-     * <p>When a disconnect is detected, the game is moved to WAITING status and both
+     * <p>When a disconnect is detected, the game is moved to PAUSED status and both
      * players are notified. Both players will then need to use their resume tokens
      * to rejoin the game.
+     *
+     * <p><b>IMPORTANT:</b> Game is moved to PAUSED (not WAITING) to enable resume flow:
+     * <ul>
+     *   <li>PAUSED allows resume via resume tokens</li>
+     *   <li>First resume: PAUSED → WAITING (handshake initiated)</li>
+     *   <li>Second resume: WAITING → RUNNING (both players ready)</li>
+     * </ul>
      *
      * @param event the disconnect event containing the session ID
      */
@@ -148,20 +164,24 @@ public class WebSocketEventListener {
         sendEvent(game, GameEventDto.playerDisconnected(game, player));
 
         // Auto-pause the game if it's in an active state
+        // IMPORTANT: Move to PAUSED (not WAITING) for resume flow to work
         // FINISHED games are not affected by disconnections
         if (game.getStatus() == GameStatus.RUNNING ||
-                game.getStatus() == GameStatus.SETUP ||
-                game.getStatus() == GameStatus.PAUSED) {
+                game.getStatus() == GameStatus.SETUP) {
 
-            log.info("Moving game {} to WAITING status due to player {} disconnect. Both players need to resume.",
+            log.info("Moving game {} to PAUSED status due to player {} disconnect. Both players need to resume with tokens.",
                     game.getGameCode(), player.getUsername());
 
-            // Move to WAITING status - both players must resume with tokens
-            game.setStatus(GameStatus.WAITING);
+            // Move to PAUSED status - enables resume flow
+            game.setStatus(GameStatus.PAUSED);
             gameRepository.save(game);
 
             // Send pause event to notify clients
             sendEvent(game, GameEventDto.gamePaused(game, player));
+        }
+        // If already PAUSED, no status change needed
+        else if (game.getStatus() == GameStatus.PAUSED) {
+            log.debug("Game {} already PAUSED, no status change needed", game.getGameCode());
         }
     }
 
