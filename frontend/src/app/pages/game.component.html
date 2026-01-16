@@ -68,7 +68,7 @@
               <button (click)="pauseGame()" [disabled]="game.status !== 'RUNNING' || pauseLoading">
                 Pause
               </button>
-              <button (click)="resumeGame()" [disabled]="game.status !== 'PAUSED'">
+              <button (click)="resumeGame()" [disabled]="game.status !== 'PAUSED' && game.status !== 'WAITING'">
                 Resume
               </button>
               <button class="forfeit" (click)="forfeitGame()" [disabled]="forfeitLoading || game.status === 'FINISHED'">

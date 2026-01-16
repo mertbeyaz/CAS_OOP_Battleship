@@ -7,7 +7,7 @@
       <div>
         <p class="eyebrow">Multiplayer</p>
         <h1>Battleship</h1>
-        <p class="lede">Starte sofort oder tritt mit Game-Code bei.</p>
+        <p class="lede">Starte sofort oder setze ein Spiel mit Resume-Token fort.</p>
       </div>
       <div class="badge">v1</div>
     </header>
@@ -18,7 +18,7 @@
       <section class="card">
         <div class="card-head">
           <h2>Schnelles Spiel</h2>
-          <p class="hint">FǬllt automatisch eine Lobby.</p>
+          <p class="hint">Füllt automatisch eine Lobby.</p>
         </div>
         <form (ngSubmit)="quickPlay()" #fQuick="ngForm" class="form">
           <label>
@@ -40,40 +40,32 @@
         <p *ngIf="errorQuick" class="error">{{ errorQuick }}</p>
       </section>
 
-      <!-- Join by code -->
+      <!-- Resume by token -->
       <section class="card">
         <div class="card-head">
-          <h2>Spiel beitreten</h2>
-          <p class="hint">Mit Code und Username in ein Game springen.</p>
+          <h2>Spiel fortsetzen</h2>
+          <p class="hint">Nur möglich, wenn das Spiel auf PAUSED steht.</p>
         </div>
-        <form (ngSubmit)="joinByCode()" #fJoin="ngForm" class="form two-col">
+
+        <form (ngSubmit)="joinByCode()" #fJoin="ngForm" class="form">
           <label>
-            <span>Game Code</span>
+            <span>Resume Token</span>
             <input
-              name="gameCode"
-              [(ngModel)]="gameCode"
+              name="resumeTokenJoin"
+              [(ngModel)]="resumeTokenJoin"
               required
               autocomplete="off"
               [disabled]="loadingJoin"
-              placeholder="Code einfǬgen"
+              placeholder="Resume Token"
             />
           </label>
-          <label>
-            <span>Username</span>
-            <input
-              name="usernameJoin"
-              [(ngModel)]="usernameJoin"
-              required
-              minlength="2"
-              autocomplete="off"
-              [disabled]="loadingJoin"
-              placeholder="Dein Username"
-            />
-          </label>
-          <button type="submit" class="primary" [disabled]="loadingJoin || !fJoin.valid">
-            {{ loadingJoin ? 'Tritt bei...' : 'Beitreten' }}
+
+          <button type="submit" class="primary" [disabled]="loadingJoin">
+          {{ loadingJoin ? 'Verbinde...' : 'Resume' }}
           </button>
         </form>
+
+        <p class="form-note">Resume funktioniert nur mit gültigem Token und Status PAUSED.</p>
         <p *ngIf="errorJoin" class="error">{{ errorJoin }}</p>
       </section>
     </div>
