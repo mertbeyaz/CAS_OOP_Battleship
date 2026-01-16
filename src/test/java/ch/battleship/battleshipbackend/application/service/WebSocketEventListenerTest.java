@@ -246,9 +246,9 @@ class WebSocketEventListenerTest {
         verify(connectionRepository, times(1)).save(connectionCaptor.capture());
         assertThat(connectionCaptor.getValue().isConnected()).isFalse();
 
-        // Assert: game should be moved to WAITING status
+        // Assert: game should be moved to PAUSED status
         verify(gameRepository, times(1)).save(gameCaptor.capture());
-        assertThat(gameCaptor.getValue().getStatus()).isEqualTo(GameStatus.WAITING);
+        assertThat(gameCaptor.getValue().getStatus()).isEqualTo(GameStatus.PAUSED);
 
         // Assert: two events should be sent (disconnect + pause)
         verify(messagingTemplate, times(2))
@@ -288,9 +288,9 @@ class WebSocketEventListenerTest {
         // Act
         listener.handleDisconnect(event);
 
-        // Assert: game should be moved to WAITING status even in SETUP phase
+        // Assert: game should be moved to PAUSED status even in SETUP phase
         verify(gameRepository, times(1)).save(gameCaptor.capture());
-        assertThat(gameCaptor.getValue().getStatus()).isEqualTo(GameStatus.WAITING);
+        assertThat(gameCaptor.getValue().getStatus()).isEqualTo(GameStatus.PAUSED);
     }
 
     @Test
