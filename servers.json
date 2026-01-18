@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Battleship Local",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "battleship",
+      "Username": "appsvc",
+      "SSLMode": "prefer",
+      "Comment": "Auto-configured via Docker"
+    }
+  }
+}
