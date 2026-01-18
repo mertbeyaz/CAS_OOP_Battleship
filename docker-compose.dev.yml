@@ -24,9 +24,9 @@ services:
       POSTGRES_DB: battleship
       POSTGRES_USER: appsvc
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      #ports:
-      # optional, direct access from outside
-      #- "5432:5432"
+    ports:
+        # optional, direct access from outside
+      - "5432:5432"
     volumes:
       - pg_dev_data:/var/lib/postgresql
     healthcheck:
@@ -41,7 +41,7 @@ services:
       dockerfile: Dockerfile.backend.dev
     container_name: battleship-backend-dev
     environment:
-      SPRING_PROFILES_ACTIVE: dev
+      SPRING_PROFILES_ACTIVE: ${APP_PROFILE:-dev}
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/battleship
       SPRING_DATASOURCE_USERNAME: appsvc
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
