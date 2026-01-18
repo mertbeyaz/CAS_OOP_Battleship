@@ -6,6 +6,8 @@ services:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --entrypoints.web.address=:80
+      # Idle timeout
+      - --entrypoints.web.transport.respondingTimeouts.idleTimeout=60s
       # Optional for debugging purpose only
       - --api.dashboard=true
       - --api.insecure=true
@@ -72,6 +74,7 @@ services:
         condition: service_healthy
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+      - ./servers.json:/pgadmin4/servers.json:ro
     labels:
       - traefik.enable=true
       - traefik.http.routers.pgadmin.rule=PathPrefix(`/pgadmin`)
