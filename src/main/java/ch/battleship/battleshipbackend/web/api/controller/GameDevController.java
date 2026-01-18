@@ -29,7 +29,7 @@ import java.util.UUID;
  *   <li>{@link IllegalStateException} -> 400 Bad Request</li>
  * </ul>
  */
-@Profile({"dev", "test"})
+@Profile({"dev", "test", "dev-reset"})
 @RestController
 @RequestMapping("/api/dev/games")
 public class GameDevController {
