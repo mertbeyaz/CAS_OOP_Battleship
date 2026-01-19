@@ -12,11 +12,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.socket.messaging.SessionDisconnectEvent;
 import org.springframework.web.socket.messaging.SessionSubscribeEvent;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -57,9 +60,23 @@ import java.util.UUID;
 @Slf4j
 public class WebSocketEventListener {
 
+    /**
+     * Grace period in milliseconds before pausing the game after a disconnect.
+     * This allows for quick reconnects (e.g., browser refresh) without pausing the game.
+     *
+     * <p>Typical scenarios covered:
+     * <ul>
+     *   <li>Browser refresh: 2-5 seconds</li>
+     *   <li>WiFi switch: 5-15 seconds</li>
+     *   <li>Brief network hiccup: < 15 seconds</li>
+     * </ul>
+     */
+    private static final long DISCONNECT_GRACE_PERIOD_MS = 20000; // 20 seconds
+
     private final PlayerConnectionRepository connectionRepository;
     private final GameRepository gameRepository;
     private final SimpMessagingTemplate messagingTemplate;
+    private final TaskScheduler taskScheduler;
 
     /**
      * Handles player subscription to game events.
@@ -160,8 +177,54 @@ public class WebSocketEventListener {
         connection.markDisconnected();
         connectionRepository.save(connection);
 
-        // Notify all players about the disconnection
+        // Notify all players about the disconnection (warning only, not yet paused)
         sendEvent(game, GameEventDto.playerDisconnected(game, player));
+
+        // Schedule game pause after grace period
+        // This allows for quick reconnects (browser refresh, WiFi switch) without pausing
+        UUID connectionId = connection.getId();
+        Instant scheduledTime = Instant.now().plus(Duration.ofMillis(DISCONNECT_GRACE_PERIOD_MS));
+
+        taskScheduler.schedule(
+                () -> checkAndPauseIfStillDisconnected(connectionId),
+                scheduledTime
+        );
+
+        log.debug("Scheduled pause check for game {} in {}ms (player: {})",
+                game.getGameCode(), DISCONNECT_GRACE_PERIOD_MS, player.getUsername());
+    }
+
+    /**
+     * Checks if a player connection is still disconnected after the grace period
+     * and pauses the game if necessary.
+     *
+     * <p>This method is called asynchronously after the grace period expires.
+     * If the player has reconnected in the meantime, no action is taken.
+     *
+     * @param connectionId ID of the player connection to check
+     */
+    @Transactional
+    protected void checkAndPauseIfStillDisconnected(UUID connectionId) {
+        // Refresh connection from database (might have reconnected)
+        Optional<PlayerConnection> connectionOpt = connectionRepository.findById(connectionId);
+
+        if (connectionOpt.isEmpty()) {
+            log.debug("Connection {} no longer exists, skipping pause check", connectionId);
+            return;
+        }
+
+        PlayerConnection connection = connectionOpt.get();
+
+        // If player reconnected during grace period, do nothing
+        if (connection.isConnected()) {
+            log.info("Player {} reconnected during grace period, game {} continues",
+                    connection.getPlayer().getUsername(), connection.getGame().getGameCode());
+            return;
+        }
+
+        // Still disconnected after grace period → pause game
+        Game game = connection.getGame();
+        Player player = connection.getPlayer();
 
         // Auto-pause the game if it's in an active state
         // IMPORTANT: Move to PAUSED (not WAITING) for resume flow to work
@@ -169,8 +232,8 @@ public class WebSocketEventListener {
         if (game.getStatus() == GameStatus.RUNNING ||
                 game.getStatus() == GameStatus.SETUP) {
 
-            log.info("Moving game {} to PAUSED status due to player {} disconnect. Both players need to resume with tokens.",
-                    game.getGameCode(), player.getUsername());
+            log.info("Moving game {} to PAUSED status due to player {} still disconnected after {}ms grace period",
+                    game.getGameCode(), player.getUsername(), DISCONNECT_GRACE_PERIOD_MS);
 
             // Move to PAUSED status - enables resume flow
             game.setStatus(GameStatus.PAUSED);
