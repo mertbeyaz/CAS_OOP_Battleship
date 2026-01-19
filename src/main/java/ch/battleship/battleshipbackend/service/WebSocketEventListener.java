@@ -71,7 +71,7 @@ public class WebSocketEventListener {
      *   <li>Brief network hiccup: < 15 seconds</li>
      * </ul>
      */
-    private static final long DISCONNECT_GRACE_PERIOD_MS = 20000; // 20 seconds
+    private static final long DISCONNECT_GRACE_PERIOD_MS = 15000; // 15 seconds
 
     private final PlayerConnectionRepository connectionRepository;
     private final GameRepository gameRepository;
@@ -201,12 +201,18 @@ public class WebSocketEventListener {
      * <p>This method is called asynchronously after the grace period expires.
      * If the player has reconnected in the meantime, no action is taken.
      *
+     * <p><b>Note on transaction handling:</b>
+     * This method runs in a separate thread scheduled by TaskScheduler.
+     * We use a custom repository query with JOIN FETCH to eagerly load
+     * player and game associations, preventing LazyInitializationException.
+     *
      * @param connectionId ID of the player connection to check
      */
     @Transactional
     protected void checkAndPauseIfStillDisconnected(UUID connectionId) {
-        // Refresh connection from database (might have reconnected)
-        Optional<PlayerConnection> connectionOpt = connectionRepository.findById(connectionId);
+        // Refresh connection from database with player and game eagerly loaded
+        // This prevents LazyInitializationException in the async context
+        Optional<PlayerConnection> connectionOpt = connectionRepository.findByIdWithPlayerAndGame(connectionId);
 
         if (connectionOpt.isEmpty()) {
             log.debug("Connection {} no longer exists, skipping pause check", connectionId);
