@@ -4,63 +4,70 @@ import ch.battleship.battleshipbackend.domain.Game;
 import ch.battleship.battleshipbackend.domain.Player;
 import ch.battleship.battleshipbackend.domain.PlayerConnection;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 /**
- * Repository for managing {@link PlayerConnection} entities.
+ * Repository for {@link PlayerConnection} entities.
  *
- * <p>Provides query methods to track and manage player WebSocket connections
- * across games. Used primarily by the WebSocket event listener to detect
- * disconnections and by the game service to check connection status.
+ * <p>Provides queries for tracking and managing player WebSocket connections,
+ * including session-based lookups and cleanup of stale connections.
  */
-@Repository
 public interface PlayerConnectionRepository extends JpaRepository<PlayerConnection, UUID> {
-
-    /**
-     * Finds a player connection by game and player.
-     *
-     * <p>Used to check if a player already has a connection record in a game,
-     * or to update an existing connection when a player reconnects.
-     *
-     * @param game the game to search in
-     * @param player the player to find
-     * @return the player connection if found, empty otherwise
-     */
-    Optional<PlayerConnection> findByGameAndPlayer(Game game, Player player);
 
     /**
      * Finds a player connection by WebSocket session ID.
      *
-     * <p>Used by the disconnect event listener to identify which player
-     * disconnected when a WebSocket session closes.
-     *
      * @param sessionId the WebSocket session identifier
-     * @return the player connection if found, empty otherwise
+     * @return connection if found, empty otherwise
      */
     Optional<PlayerConnection> findBySessionId(String sessionId);
 
     /**
-     * Finds all player connections for a specific game.
+     * Finds a player connection by game and player.
      *
-     * <p>Used to check the connection status of all players in a game,
-     * for example to determine if all players are connected for auto-resume logic.
+     * @param game the game
+     * @param player the player
+     * @return connection if found, empty otherwise
+     */
+    Optional<PlayerConnection> findByGameAndPlayer(Game game, Player player);
+
+    /**
+     * Finds all connections for a specific game.
      *
-     * @param game the game to search in
-     * @return list of all player connections in the game (may be empty)
+     * @param game the game
+     * @return list of connections (may be empty)
      */
     List<PlayerConnection> findByGame(Game game);
 
     /**
-     * Deletes all player connections for a specific game.
+     * Finds all connections where lastSeen is before the given threshold.
      *
-     * <p>Used for cleanup when a game ends or is deleted. This is a
-     * modifying query and should be called within a transactional context.
+     * <p>Used by scheduled cleanup to remove stale connection records.
      *
-     * @param game the game whose connections should be deleted
+     * @param threshold timestamp threshold (connections older than this will be returned)
+     * @return list of old connections
      */
-    void deleteByGame(Game game);
+    List<PlayerConnection> findByLastSeenBefore(Instant threshold);
+
+    /**
+     * Finds a player connection by ID with player and game eagerly fetched.
+     *
+     * <p>This method is used by asynchronous tasks (e.g., disconnect grace period checks)
+     * that run outside of the normal request transaction scope. Eager fetching prevents
+     * LazyInitializationException when accessing player or game properties.
+     *
+     * @param id the connection ID
+     * @return connection with player and game loaded, empty if not found
+     */
+    @Query("SELECT pc FROM PlayerConnection pc " +
+            "JOIN FETCH pc.player " +
+            "JOIN FETCH pc.game " +
+            "WHERE pc.id = :id")
+    Optional<PlayerConnection> findByIdWithPlayerAndGame(@Param("id") UUID id);
 }
