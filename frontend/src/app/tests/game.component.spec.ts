@@ -1,100 +1,98 @@
 import '../../test-setup';
 
 import { TestBed } from '@angular/core/testing';
-import { LandingComponent } from '../pages/landing.component';
-import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
-import { Router } from '@angular/router';
-import { RouterTestingModule } from '@angular/router/testing';
-import { API_BASE_URL } from '../app.config';
+import { HttpClientTestingModule } from '@angular/common/http/testing';
+import { ActivatedRoute, convertToParamMap } from '@angular/router';
+import { of } from 'rxjs';
 
-describe('LandingComponent', () => {
-  let httpMock: HttpTestingController;
-  let router: Router;
+import { GameComponent } from '../pages/game.component';
 
+describe('GameComponent', () => {
   beforeEach(() => {
-    localStorage.clear();
-
     TestBed.configureTestingModule({
-      imports: [LandingComponent, HttpClientTestingModule, RouterTestingModule],
+      imports: [GameComponent, HttpClientTestingModule],
+      providers: [
+        {
+          provide: ActivatedRoute,
+          useValue: { queryParamMap: of(convertToParamMap({})) },
+        },
+      ],
     });
-
-    httpMock = TestBed.inject(HttpTestingController);
-    router = TestBed.inject(Router);
-    spyOn(router, 'navigate').and.returnValue(Promise.resolve(true));
   });
 
-  afterEach(() => {
-    httpMock.verify();
-  });
-
-  it('quickPlay sets error when username is empty', () => {
-    const fixture = TestBed.createComponent(LandingComponent);
+  it('buildMyBoardMaps collects ship coordinates', () => {
+    const fixture = TestBed.createComponent(GameComponent);
     const component = fixture.componentInstance;
 
-    component.usernameQuick = '   ';
-    component.quickPlay();
+    component.myBoardState = {
+      boardId: 'b1',
+      width: 10,
+      height: 10,
+      locked: false,
+      shipPlacements: [
+        { type: 'DESTROYER', startX: 1, startY: 2, orientation: 'HORIZONTAL', size: 3 },
+        { type: 'SUB', startX: 0, startY: 0, orientation: 'VERTICAL', size: 2 },
+      ],
+    };
 
-    expect(component.errorQuick).toBeTruthy();
-    expect(component.loadingQuick).toBeFalse();
+    component.buildMyBoardMaps();
+
+    expect(component.myShipCoords.has('1,2')).toBeTrue();
+    expect(component.myShipCoords.has('2,2')).toBeTrue();
+    expect(component.myShipCoords.has('3,2')).toBeTrue();
+    expect(component.myShipCoords.has('0,0')).toBeTrue();
+    expect(component.myShipCoords.has('0,1')).toBeTrue();
   });
 
-  it('quickPlay sends request and navigates on success', () => {
-    const fixture = TestBed.createComponent(LandingComponent);
+  it('cellStateForMine prefers shot results over ships', () => {
+    const fixture = TestBed.createComponent(GameComponent);
     const component = fixture.componentInstance;
 
-    component.usernameQuick = 'Ray';
-    component.quickPlay();
+    component.myShipCoords.add('4,4');
+    expect(component.cellStateForMine(4, 4)).toBe('ship');
 
-    const req = httpMock.expectOne(`${API_BASE_URL}/lobbies/auto-join`);
-    expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual({ username: 'Ray' });
+    component.shotsOnMyBoard.set('4,4', 'hit');
+    expect(component.cellStateForMine(4, 4)).toBe('hit');
+  });
 
-    req.flush({
-      lobbyCode: 'L1',
+  it('cellStateForOpp reflects shots on opponent board', () => {
+    const fixture = TestBed.createComponent(GameComponent);
+    const component = fixture.componentInstance;
+
+    component.myShotsOnOpponent.set('1,1', 'miss');
+    component.myShotsOnOpponent.set('2,2', 'hit');
+    component.myShotsOnOpponent.set('3,3', 'sunk');
+
+    expect(component.cellStateForOpp(1, 1)).toBe('miss');
+    expect(component.cellStateForOpp(2, 2)).toBe('hit');
+    expect(component.cellStateForOpp(3, 3)).toBe('sunk');
+  });
+
+  it('canShoot is true only when running and your turn', () => {
+    const fixture = TestBed.createComponent(GameComponent);
+    const component = fixture.componentInstance;
+
+    component.game = {
       gameCode: 'G1',
-      status: 'WAITING',
-      myPlayerId: 'P1',
-      myPlayerName: 'Ray',
-      myBoard: null,
-      resumeToken: 'T1',
-    });
+      status: 'RUNNING',
+      yourBoardLocked: true,
+      opponentBoardLocked: true,
+      yourTurn: true,
+      opponentName: null,
+    };
 
-    expect(component.loadingQuick).toBeFalse();
-    expect(router.navigate).toHaveBeenCalled();
+    component.shotLoading = false;
+    expect(component.canShoot()).toBeTrue();
+
+    component.shotLoading = true;
+    expect(component.canShoot()).toBeFalse();
   });
 
-  it('joinByCode sets error when gameCode is empty', () => {
-    const fixture = TestBed.createComponent(LandingComponent);
+  it('cellLabel returns grid coordinates', () => {
+    const fixture = TestBed.createComponent(GameComponent);
     const component = fixture.componentInstance;
 
-    component.gameCode = '   ';
-    component.usernameJoin = 'Max';
-    component.joinByCode();
-
-    expect(component.errorJoin).toBeTruthy();
-    expect(component.loadingJoin).toBeFalse();
-  });
-
-  it('joinByCode sends join request and navigates on success', () => {
-    const fixture = TestBed.createComponent(LandingComponent);
-    const component = fixture.componentInstance;
-
-    component.gameCode = 'G1';
-    component.usernameJoin = 'Max';
-    component.joinByCode();
-
-    const req = httpMock.expectOne(`${API_BASE_URL}/games/G1/join`);
-    expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual({ username: 'Max' });
-
-    req.flush({
-      gameCode: 'G1',
-      playerId: 'P2',
-      playerName: 'Max',
-      status: 'WAITING',
-    });
-
-    expect(component.loadingJoin).toBeFalse();
-    expect(router.navigate).toHaveBeenCalled();
+    expect(component.cellLabel(0, 10)).toBe('0,0');
+    expect(component.cellLabel(11, 10)).toBe('1,1');
   });
 });
