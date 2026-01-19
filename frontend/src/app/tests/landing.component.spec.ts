@@ -11,6 +11,8 @@ describe('LandingComponent', () => {
   let router: Router;
 
   beforeEach(() => {
+    localStorage.clear();
+
     TestBed.configureTestingModule({
       imports: [LandingComponent, HttpClientTestingModule, RouterTestingModule],
     });
@@ -58,36 +60,40 @@ describe('LandingComponent', () => {
 
     expect(component.loadingQuick).toBeFalse();
     expect(router.navigate).toHaveBeenCalled();
+
+    const stored = localStorage.getItem('resumePlayer:T1');
+    expect(stored).toContain('"gameCode":"G1"');
   });
 
-  it('joinByCode sets error when gameCode is empty', () => {
+  it('joinByCode sets error when resume token is empty', () => {
     const fixture = TestBed.createComponent(LandingComponent);
     const component = fixture.componentInstance;
 
-    component.gameCode = '   ';
-    component.usernameJoin = 'Max';
+    component.resumeTokenJoin = '   ';
     component.joinByCode();
 
     expect(component.errorJoin).toBeTruthy();
     expect(component.loadingJoin).toBeFalse();
   });
 
-  it('joinByCode sends join request and navigates on success', () => {
+  it('joinByCode sends resume request and navigates on success', () => {
     const fixture = TestBed.createComponent(LandingComponent);
     const component = fixture.componentInstance;
 
-    component.gameCode = 'G1';
-    component.usernameJoin = 'Max';
+    const token = 'T2';
+    localStorage.setItem(
+      `resumePlayer:${token}`,
+      JSON.stringify({ gameCode: 'G2', playerId: 'P2', playerName: 'Max' })
+    );
+
+    component.resumeTokenJoin = token;
     component.joinByCode();
 
-    const req = httpMock.expectOne(`${API_BASE_URL}/games/G1/join`);
+    const req = httpMock.expectOne(`${API_BASE_URL}/games/resume`);
     expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual({ username: 'Max' });
+    expect(req.request.body).toEqual({ token });
 
     req.flush({
-      gameCode: 'G1',
-      playerId: 'P2',
-      playerName: 'Max',
       status: 'WAITING',
     });
 

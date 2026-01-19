@@ -561,7 +561,11 @@ export class GameComponent implements OnInit, OnDestroy {
 
     this.stomp.onConnect = () => {
       this.zone.run(() => {
-        this.eventSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/events`, (msg) => this.handleEvent(msg));
+        this.eventSub = this.stomp!.subscribe(
+          `/topic/games/${this.gameCode}/events`,
+          (msg) => this.handleEvent(msg),
+          { playerId: this.myPlayerId }
+        );
         this.chatSub = this.stomp!.subscribe(`/topic/games/${this.gameCode}/chat`, (msg) => this.handleChat(msg));
 
         if (this.lobbyCode) {
@@ -620,7 +624,9 @@ export class GameComponent implements OnInit, OnDestroy {
         'GAME_FINISHED',
         'GAME_FORFEITED',
         'GAME_PAUSED',
-        'GAME_RESUMED'
+        'GAME_RESUMED',
+        'PLAYER_DISCONNECTED',
+        'PLAYER_RECONNECTED'
       ].includes(evt.type)) {
         this.loadStateSnapshot();
         return;
