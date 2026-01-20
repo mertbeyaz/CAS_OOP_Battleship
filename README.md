@@ -224,6 +224,15 @@ GET    /api/dev/games/{gameCode}/boards/{boardId}/ascii  # ASCII view
 GET    /api/dev/games/{gameCode}/connections             # Connection status
 ```
 
+### Connection Cleanup (Dev only)
+```
+GET       /api/dev/cleanup/connections    # Gets a list of all current connections with details
+POST      /api/dev/cleanup/connections    # Manually triggers the connection cleanup process
+GET       /api/dev/cleanup/status         # Gets the status of connections eglible for cleanup
+GET       /api/dev/cleanup/config         # Gets the current cleanup configuration
+DELETE    /api/dev/cleanup/all            # Deletes all plaxer connections from the database
+```
+
 ### WebSocket Topics
 
 ```
