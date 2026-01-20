@@ -9,6 +9,7 @@ import ch.battleship.battleshipbackend.repository.PlayerConnectionRepository;
 import ch.battleship.battleshipbackend.web.api.dto.GameEventDto;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.event.EventListener;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
@@ -71,7 +72,8 @@ public class WebSocketEventListener {
      *   <li>Brief network hiccup: < 15 seconds</li>
      * </ul>
      */
-    private static final long DISCONNECT_GRACE_PERIOD_MS = 15000; // 15 seconds
+    @Value("${websocket.disconnect.grace-period-ms:15000}") // Default 15 seconds
+    private long disconnectGracePeriodMs;
 
     private final PlayerConnectionRepository connectionRepository;
     private final GameRepository gameRepository;
@@ -183,7 +185,7 @@ public class WebSocketEventListener {
         // Schedule game pause after grace period
         // This allows for quick reconnects (browser refresh, WiFi switch) without pausing
         UUID connectionId = connection.getId();
-        Instant scheduledTime = Instant.now().plus(Duration.ofMillis(DISCONNECT_GRACE_PERIOD_MS));
+        Instant scheduledTime = Instant.now().plus(Duration.ofMillis(disconnectGracePeriodMs));
 
         taskScheduler.schedule(
                 () -> checkAndPauseIfStillDisconnected(connectionId),
@@ -191,7 +193,7 @@ public class WebSocketEventListener {
         );
 
         log.debug("Scheduled pause check for game {} in {}ms (player: {})",
-                game.getGameCode(), DISCONNECT_GRACE_PERIOD_MS, player.getUsername());
+                game.getGameCode(), disconnectGracePeriodMs, player.getUsername());
     }
 
     /**
@@ -239,7 +241,7 @@ public class WebSocketEventListener {
                 game.getStatus() == GameStatus.SETUP) {
 
             log.info("Moving game {} to PAUSED status due to player {} still disconnected after {}ms grace period",
-                    game.getGameCode(), player.getUsername(), DISCONNECT_GRACE_PERIOD_MS);
+                    game.getGameCode(), player.getUsername(), disconnectGracePeriodMs);
 
             // Move to PAUSED status - enables resume flow
             game.setStatus(GameStatus.PAUSED);
