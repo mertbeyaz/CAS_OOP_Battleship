@@ -988,33 +988,16 @@ public class GameService {
      * @return public view DTO for the requester
      */
     private GamePublicDto toPublicDto(Game game, UUID requesterPlayerId) {
-        Player requester = game.getPlayers().stream()
-                .filter(p -> p != null && p.getId() != null)
-                .filter(p -> Objects.equals(p.getId(), requesterPlayerId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + requesterPlayerId));
-
-        Player opponent = game.getPlayers().stream()
-                .filter(p -> p != null && p.getId() != null)
-                .filter(p -> !Objects.equals(p.getId(), requesterPlayerId))
-                .findFirst()
-                .orElse(null);
-
-        Map<UUID, Board> boardByOwnerId = new HashMap<>();
-        for (Board b : game.getBoards()) {
-            if (b == null || b.getOwner() == null || b.getOwner().getId() == null) continue;
-            boardByOwnerId.put(b.getOwner().getId(), b);
-        }
+        // Extract common game state using helper methods
+        Player opponent = findOpponent(game, requesterPlayerId);
+        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
 
         Board yourBoard = boardByOwnerId.get(requesterPlayerId);
         Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
 
         boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
         boolean opponentBoardLocked = oppBoard != null && oppBoard.isLocked();
-
-        boolean yourTurn = game.getStatus() == GameStatus.RUNNING
-                && game.getCurrentTurnPlayerId() != null
-                && Objects.equals(game.getCurrentTurnPlayerId(), requesterPlayerId);
+        boolean yourTurn = isYourTurn(game, requesterPlayerId);
 
         String opponentName = (opponent == null) ? null : opponent.getUsername();
 
@@ -1043,36 +1026,22 @@ public class GameService {
      * @return snapshot DTO for the viewer
      */
     private GameSnapshotDto toSnapshot(Game game, UUID viewerPlayerId) {
-        Player you = game.getPlayers().stream()
-                .filter(p -> p != null && p.getId() != null)
-                .filter(p -> Objects.equals(p.getId(), viewerPlayerId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + viewerPlayerId));
-
-        Player opponent = game.getPlayers().stream()
-                .filter(p -> p != null && p.getId() != null)
-                .filter(p -> !Objects.equals(p.getId(), viewerPlayerId))
-                .findFirst()
-                .orElse(null);
-
-        Map<UUID, Board> boardByOwnerId = new HashMap<>();
-        for (Board b : game.getBoards()) {
-            if (b == null || b.getOwner() == null || b.getOwner().getId() == null) continue;
-            boardByOwnerId.put(b.getOwner().getId(), b);
-        }
+        // Extract common game state
+        Player you = findViewer(game, viewerPlayerId);
+        Player opponent = findOpponent(game, viewerPlayerId);
+        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
 
         Board yourBoard = boardByOwnerId.get(viewerPlayerId);
         Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
 
         boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
         boolean oppBoardLocked = oppBoard != null && oppBoard.isLocked();
+        boolean yourTurn = isYourTurn(game, viewerPlayerId);
 
-        boolean yourTurn = game.getStatus() == GameStatus.RUNNING
-                && game.getCurrentTurnPlayerId() != null
-                && Objects.equals(game.getCurrentTurnPlayerId(), viewerPlayerId);
-
+        // Build shots lists
         List<Shot> allShots = game.getShots() == null ? List.of() : game.getShots();
 
+        // Your board DTO with ship placements visible
         BoardStateDto yourBoardDto = (yourBoard == null)
                 ? null
                 : new BoardStateDto(
@@ -1083,6 +1052,7 @@ public class GameService {
                 yourBoard.getPlacements().stream().map(ShipPlacementDto::from).toList()
         );
 
+        // Shots on your board (incoming shots from opponent)
         List<ShotViewDto> shotsOnYourBoard = (yourBoard == null)
                 ? List.of()
                 : allShots.stream()
@@ -1090,6 +1060,7 @@ public class GameService {
                 .map(ShotViewDto::from)
                 .toList();
 
+        // Your shots on opponent board (outgoing shots you fired)
         List<ShotViewDto> yourShotsOnOpponent = (oppBoard == null)
                 ? List.of()
                 : allShots.stream()
@@ -1116,4 +1087,69 @@ public class GameService {
                 yourShotsOnOpponent
         );
     }
+
+
+
+/**
+ * Finds the opponent player for a given viewer in the game.
+ *
+ * @param game the game
+ * @param viewerPlayerId ID of the viewer player
+ * @return opponent player, or null if not found (single-player scenario or missing opponent)
+ */
+private Player findOpponent(Game game, UUID viewerPlayerId) {
+    return game.getPlayers().stream()
+            .filter(p -> p != null && p.getId() != null)
+            .filter(p -> !Objects.equals(p.getId(), viewerPlayerId))
+            .findFirst()
+            .orElse(null);
+}
+
+/**
+ * Finds the viewer player in the game.
+ *
+ * @param game the game
+ * @param viewerPlayerId ID of the viewer player
+ * @return viewer player
+ * @throws IllegalStateException if viewer player is not found in the game
+ */
+private Player findViewer(Game game, UUID viewerPlayerId) {
+    return game.getPlayers().stream()
+            .filter(p -> p != null && p.getId() != null)
+            .filter(p -> Objects.equals(p.getId(), viewerPlayerId))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + viewerPlayerId));
+}
+
+/**
+ * Builds a map of boards indexed by their owner's player ID.
+ *
+ * <p>Filters out null boards and boards without valid owners.
+ *
+ * @param game the game
+ * @return map of player ID to board
+ */
+private Map<UUID, Board> buildBoardMap(Game game) {
+    Map<UUID, Board> boardByOwnerId = new HashMap<>();
+    for (Board b : game.getBoards()) {
+        if (b == null || b.getOwner() == null || b.getOwner().getId() == null) {
+            continue;
+        }
+        boardByOwnerId.put(b.getOwner().getId(), b);
+    }
+    return boardByOwnerId;
+}
+
+/**
+ * Determines if it's currently the viewer's turn.
+ *
+ * @param game the game
+ * @param playerId ID of the player to check
+ * @return true if game is running and it's the player's turn
+ */
+private boolean isYourTurn(Game game, UUID playerId) {
+    return game.getStatus() == GameStatus.RUNNING
+            && game.getCurrentTurnPlayerId() != null
+            && Objects.equals(game.getCurrentTurnPlayerId(), playerId);
+}
 }
