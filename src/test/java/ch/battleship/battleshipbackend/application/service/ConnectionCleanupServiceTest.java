@@ -6,12 +6,14 @@ import ch.battleship.battleshipbackend.domain.Player;
 import ch.battleship.battleshipbackend.domain.PlayerConnection;
 import ch.battleship.battleshipbackend.repository.PlayerConnectionRepository;
 import ch.battleship.battleshipbackend.service.ConnectionCleanupService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -38,6 +40,7 @@ import static org.mockito.Mockito.*;
  *   <li>Tests use Mockito to simulate repository interactions</li>
  *   <li>Time-based tests use Instant calculations for threshold verification</li>
  *   <li>Scheduled execution is not tested (Spring scheduling framework responsibility)</li>
+ *   <li>Uses ReflectionTestUtils to set @Value properties for testing</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -48,6 +51,17 @@ class ConnectionCleanupServiceTest {
 
     @InjectMocks
     private ConnectionCleanupService cleanupService;
+
+    /**
+     * Sets up default property values for each test.
+     * These simulate the @Value properties from application.properties.
+     */
+    @BeforeEach
+    void setUp() {
+        // Set default values for @Value properties
+        ReflectionTestUtils.setField(cleanupService, "cleanupIntervalMs", 3600000L); // 1 hour
+        ReflectionTestUtils.setField(cleanupService, "cleanupThresholdHours", 24);   // 24 hours
+    }
 
     // ------------------------------------------------------------------------------------
     // cleanupOldConnections - Basic Cleanup
@@ -218,6 +232,44 @@ class ConnectionCleanupServiceTest {
     }
 
     // ------------------------------------------------------------------------------------
+    // cleanupOldConnections - Custom Thresholds
+    // ------------------------------------------------------------------------------------
+
+    @Test
+    void cleanupOldConnections_shouldRespectCustomThreshold_when48Hours() {
+        // Arrange: Set custom threshold of 48 hours
+        ReflectionTestUtils.setField(cleanupService, "cleanupThresholdHours", 48);
+
+        Game game = new Game(GameConfiguration.defaultConfig());
+        setId(game, UUID.randomUUID());
+
+        Player player = new Player("Custom");
+        setId(player, UUID.randomUUID());
+
+        // Connection 30 hours old - would be deleted with 24h threshold, but not with 48h
+        PlayerConnection connection30h = new PlayerConnection(game, player, "session-30h");
+        setLastSeen(connection30h, Instant.now().minusSeconds(30 * 3600));
+
+        // Connection 50 hours old - should be deleted even with 48h threshold
+        PlayerConnection connection50h = new PlayerConnection(game, player, "session-50h");
+        setLastSeen(connection50h, Instant.now().minusSeconds(50 * 3600));
+
+        when(connectionRepository.findAll()).thenReturn(List.of(connection30h, connection50h));
+
+        ArgumentCaptor<List<PlayerConnection>> deleteCaptor = ArgumentCaptor.forClass(List.class);
+
+        // Act
+        cleanupService.cleanupOldConnections();
+
+        // Assert: only 50h connection should be deleted
+        verify(connectionRepository, times(1)).deleteAll(deleteCaptor.capture());
+
+        List<PlayerConnection> deletedConnections = deleteCaptor.getValue();
+        assertThat(deletedConnections).hasSize(1);
+        assertThat(deletedConnections.get(0)).isEqualTo(connection50h);
+    }
+
+    // ------------------------------------------------------------------------------------
     // triggerCleanup - Manual Trigger
     // ------------------------------------------------------------------------------------
 
@@ -249,7 +301,7 @@ class ConnectionCleanupServiceTest {
     }
 
     // ------------------------------------------------------------------------------------
-    // Getters
+    // Getters (now testing @Value properties)
     // ------------------------------------------------------------------------------------
 
     @Test
@@ -257,7 +309,7 @@ class ConnectionCleanupServiceTest {
         // Act
         int threshold = cleanupService.getCleanupThresholdHours();
 
-        // Assert
+        // Assert: should return value set via ReflectionTestUtils in @BeforeEach
         assertThat(threshold).isEqualTo(24);
     }
 
@@ -266,8 +318,20 @@ class ConnectionCleanupServiceTest {
         // Act
         long interval = cleanupService.getCleanupIntervalMs();
 
-        // Assert
+        // Assert: should return value set via ReflectionTestUtils in @BeforeEach
         assertThat(interval).isEqualTo(3600000); // 1 hour in milliseconds
+    }
+
+    @Test
+    void getCleanupThresholdHours_shouldReturnCustomValue_whenChanged() {
+        // Arrange: Set custom value
+        ReflectionTestUtils.setField(cleanupService, "cleanupThresholdHours", 48);
+
+        // Act
+        int threshold = cleanupService.getCleanupThresholdHours();
+
+        // Assert
+        assertThat(threshold).isEqualTo(48);
     }
 
     // ------------------------------------------------------------------------------------
