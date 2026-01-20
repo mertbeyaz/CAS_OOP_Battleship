@@ -13,7 +13,7 @@ The project demonstrates **clean object-oriented design**, **production-ready ar
     - [Prerequisites](#prerequisites)
     - [Run the Application](#run-the-application)
     - [Access & Management](#access--management)
-    - [Development & Reset](#️development--reset)
+    - [Development & Reset](#development--reset)
 - [🏗️ Architecture](#️-architecture)
     - [Domain Layer](#domain-layer)
     - [Service Layer](#service-layer)
@@ -30,7 +30,7 @@ The project demonstrates **clean object-oriented design**, **production-ready ar
     - [WebSocket Topics](#websocket-topics)
     - [Benefits](#benefits)
 - [🐳 Docker Setup](#-docker-setup)
-    - [Architecture](#architecture-1)
+    - [Architecture Diagram](#architecture-diagram)
 - [🔒 Security](#-security)
     - [Anti-Cheat](#anti-cheat)
     - [Data Privacy](#data-privacy)
@@ -62,7 +62,7 @@ The project demonstrates **clean object-oriented design**, **production-ready ar
 
 ## 🚀 Quick Start
 
-Get the game running in less than 2 minutes!
+Get the game running in less than ~2 minutes!
 
 ### Prerequisites
 - Docker & Docker Compose installed
@@ -230,13 +230,12 @@ GET    /api/dev/games/{gameCode}/connections             # Connection status
 /topic/games/{gameCode}/events    # Game events
 /topic/games/{gameCode}/chat      # Chat messages
 /topic/lobbies/{lobbyCode}/events # Lobby events
-
-**Note:** The `/topic/games/{gameCode}/events` topic serves dual purpose:
-- Game state updates (shots, turns, pause/resume)
-- Connection monitoring (disconnect/reconnect notifications)
-
-Frontend subscribes with `playerId` header for automatic connection tracking.
 ```
+> **Note:** The `/topic/games/{gameCode}/events` topic serves dual purpose:
+> - Game state updates (shots, turns, pause/resume)
+> - Connection monitoring (disconnect/reconnect notifications)
+>
+> Frontend subscribes with `playerId` header for automatic connection tracking.
 
 **Event Types:**
 - `BOARD_CONFIRMED` / `BOARD_REROLLED`
@@ -253,7 +252,7 @@ Frontend subscribes with `playerId` header for automatic connection tracking.
 
 ## 🐳 Docker Setup
 
-### Architecture
+### Architecture Diagram
 
 ![imgae](./img.png)
 
@@ -293,7 +292,7 @@ Frontend subscribes with `playerId` header for automatic connection tracking.
 1. **Production-Grade Architecture** - Clean, maintainable, scalable
 2. **Advanced WebSocket System** - Real-time with disconnect detection
 3. **Security-First Design** - No data leaks, anti-cheat
-5. **Developer Experience** - Easy setup, Docker-ready
+4. **Developer Experience** - Easy setup, Docker-ready
 
 ### Technical Innovations
 - **Automatic Disconnect Detection** - No frontend polling
@@ -306,7 +305,7 @@ Frontend subscribes with `playerId` header for automatic connection tracking.
 
 - **Mert Beyaz** (Frontend) - Angular application, UI/UX, real-time integration
 - **Michael Coppola** (Backend) - Architecture, WebSocket system, disconnect detection
-> *Transparency Note: This project leveraged AI tools for coding assistance and debugging. The realization of the project in this scope and timeframe would not have been possible without the use of AI.*
+> **Transparency Note:** AI tools were used to accelerate coding assistance and debugging.
 
 ## 📝 Project Focus
 
