@@ -69,7 +69,7 @@ public class ConnectionCleanupService {
      *   <li>DEBUG level: Logs cleanup runs even with zero deletions</li>
      * </ul>
      */
-    @Scheduled(fixedRateString = "${connection.cleanup.interval-ms:3600000")
+    @Scheduled(fixedRateString = "${connection.cleanup.interval-ms:3600000}")
     @Transactional
     public void cleanupOldConnections() {
         // Calculate threshold timestamp: current time - threshold hours
