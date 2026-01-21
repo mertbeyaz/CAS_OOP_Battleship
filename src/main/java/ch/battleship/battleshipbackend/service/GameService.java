@@ -62,16 +62,9 @@ public class GameService {
 
     }
 
-    /**
-     * Creates a new game using the default configuration.
-     *
-     * @return persisted game instance
-     */
-    public Game createNewGame() {
-        GameConfiguration config = GameConfiguration.defaultConfig();
-        Game game = new Game(config);
-        return gameRepository.save(game);
-    }
+    // =========================
+    // 1) QUERIES (read-only)
+    // =========================
 
     /**
      * Loads a game by its public game code.
@@ -98,6 +91,81 @@ public class GameService {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
         return toPublicDto(game, playerId);
+    }
+
+    /**
+     * Returns a detailed snapshot for the requesting player.
+     *
+     * <p>The snapshot includes own board state and shot history while keeping opponent
+     * ship placements hidden to prevent cheating.
+     *
+     * @param gameCode public game identifier
+     * @param playerId requesting player id
+     * @return snapshot view for the requesting player
+     * @throws EntityNotFoundException if the game does not exist
+     */
+    public GameSnapshotDto getSnapshot(String gameCode, UUID playerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        return toSnapshot(game, playerId);
+    }
+
+    // =========================
+    // 2) COMMANDS (game lifecycle)
+    // =========================
+
+    // --- Create / Join ---
+
+    /**
+     * Creates a new game using the default configuration.
+     *
+     * @return persisted game instance
+     */
+    public Game createNewGame() {
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        Game game = new Game(config);
+        return gameRepository.save(game);
+    }
+
+    /**
+     * Creates a game and immediately joins the first player.
+     *
+     * @param username username of the first player
+     * @return updated game including the first joined player and board
+     */
+    @Transactional
+    public Game createGameAndJoinFirstPlayer(String username) {
+        GameConfiguration config = GameConfiguration.defaultConfig();
+        Game game = new Game(config);
+        game = gameRepository.save(game);
+        return joinGame(game.getGameCode(), username);
+    }
+
+    /**
+     * Public join operation returning the data required by clients for subsequent requests.
+     *
+     * <p>Returns the generated player id which acts as the client identity within the game.
+     *
+     * @param gameCode public identifier of the game
+     * @param username chosen display name
+     * @return join response including player id and current game status
+     */
+    public JoinGameResponseDto joinGamePublic(String gameCode, String username) {
+        Game game = joinGame(gameCode, username);
+
+        Player joined = game.getPlayers().stream()
+                .filter(p -> p != null && p.getId() != null)
+                .filter(p -> username.equals(p.getUsername()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Joined player not found"));
+
+        return new JoinGameResponseDto(
+                game.getGameCode(),
+                joined.getId(),
+                joined.getUsername(),
+                game.getStatus()
+        );
     }
 
     /**
@@ -152,49 +220,243 @@ public class GameService {
         return gameRepository.save(game);
     }
 
+    // --- Setup phase ---
+
     /**
-     * Public join operation returning the data required by clients for subsequent requests.
+     * Re-generates a player's board during the setup phase.
      *
-     * <p>Returns the generated player id which acts as the client identity within the game.
-     *
-     * @param gameCode public identifier of the game
-     * @param username chosen display name
-     * @return join response including player id and current game status
+     * @param gameCode public game identifier
+     * @param playerId board owner
+     * @return board state including current placements
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not in SETUP, the player has no board, or the board is locked
      */
-    public JoinGameResponseDto joinGamePublic(String gameCode, String username) {
-        Game game = joinGame(gameCode, username);
+    public BoardStateDto rerollBoard(String gameCode, UUID playerId) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
 
-        Player joined = game.getPlayers().stream()
-                .filter(p -> p != null && p.getId() != null)
-                .filter(p -> username.equals(p.getUsername()))
+        if (game.getStatus() != GameStatus.SETUP) {
+            throw new IllegalStateException("Cannot reroll board when game is not in SETUP");
+        }
+
+        Board board = game.getBoards().stream()
+                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
                 .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Joined player not found"));
+                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
 
-        return new JoinGameResponseDto(
-                game.getGameCode(),
-                joined.getId(),
-                joined.getUsername(),
-                game.getStatus()
+        if (board.isLocked()) {
+            throw new IllegalStateException("Board is locked and cannot be rerolled");
+        }
+
+        board.clearPlacements();
+        autoPlaceFleet(board, game.getConfig());
+
+        gameRepository.save(game);
+
+        return new BoardStateDto(
+                board.getId(),
+                board.getWidth(),
+                board.getHeight(),
+                board.isLocked(),
+                board.getPlacements().stream().map(ShipPlacementDto::from).toList()
         );
     }
 
     /**
-     * Returns a detailed snapshot for the requesting player.
+     * Locks a player's board (confirmation) and starts the game once both boards are confirmed.
      *
-     * <p>The snapshot includes own board state and shot history while keeping opponent
-     * ship placements hidden to prevent cheating.
+     * <p>When the second board is confirmed, the game transitions to RUNNING and the initial turn
+     * player is selected randomly if not already set.
      *
      * @param gameCode public game identifier
-     * @param playerId requesting player id
-     * @return snapshot view for the requesting player
+     * @param playerId confirming player id
+     * @return public state view for the confirming player
      * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the game is not in SETUP, board is invalid, or already locked
      */
-    public GameSnapshotDto getSnapshot(String gameCode, UUID playerId) {
+    public GamePublicDto confirmBoard(String gameCode, UUID playerId) {
         Game game = gameRepository.findByGameCode(gameCode)
                 .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
 
-        return toSnapshot(game, playerId);
+        if (game.getStatus() != GameStatus.SETUP) {
+            throw new IllegalStateException("Cannot confirm board when game is not in SETUP");
+        }
+
+        Board board = game.getBoards().stream()
+                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
+
+        int expectedShips = parseFleetDefinition(game.getConfig()).size();
+        if (board.getPlacements().size() != expectedShips) {
+            throw new IllegalStateException(
+                    "Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size()
+            );
+        }
+
+        if (board.isLocked()) {
+            throw new IllegalStateException("Board is already confirmed");
+        }
+
+        board.setLocked(true);
+
+        boolean allLocked = game.getBoards().stream().allMatch(Board::isLocked);
+        if (allLocked) {
+            game.setStatus(GameStatus.RUNNING);
+
+            if (game.getCurrentTurnPlayerId() == null) {
+                List<Player> players = game.getPlayers();
+                if (players.size() != 2) {
+                    throw new IllegalStateException("Cannot start game without exactly 2 players");
+                }
+                int idx = ThreadLocalRandom.current().nextInt(players.size());
+                game.setCurrentTurnPlayerId(players.get(idx).getId());
+            }
+        }
+
+        Game saved = gameRepository.save(game);
+
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+
+            Player confirmingPlayer = saved.getPlayers().stream()
+                    .filter(p -> Objects.equals(p.getId(), playerId))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("Player not found in this game"));
+
+            messagingTemplate.convertAndSend(destination, GameEventDto.boardConfirmed(saved, confirmingPlayer));
+
+            if (allLocked) {
+                Player currentTurnPlayer = saved.getPlayers().stream()
+                        .filter(p -> Objects.equals(p.getId(), saved.getCurrentTurnPlayerId()))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
+
+                messagingTemplate.convertAndSend(destination, GameEventDto.gameStarted(saved, currentTurnPlayer));
+            }
+        }
+
+        return toPublicDto(saved, playerId);
     }
+
+    // --- Running phase ---
+
+    /**
+     * Fires a shot for the current turn player and applies turn and win logic.
+     *
+     * <p>Validates:
+     * <ul>
+     *   <li>game is RUNNING</li>
+     *   <li>current turn is set</li>
+     *   <li>requester is the current turn player</li>
+     *   <li>coordinates are within opponent board bounds</li>
+     * </ul>
+     *
+     * <p>Turn rule:
+     * <ul>
+     *   <li>A MISS switches the turn to the opponent.</li>
+     *   <li>HIT/SUNK keeps the turn (classic Battleship rule).</li>
+     * </ul>
+     *
+     * @param gameCode public game identifier
+     * @param shooterId player firing the shot (must match current turn)
+     * @param x 0-based x coordinate
+     * @param y 0-based y coordinate
+     * @return persisted shot entity
+     * @throws EntityNotFoundException if the game does not exist
+     * @throws IllegalStateException if the shot is not allowed (wrong state/turn/player)
+     * @throws IllegalArgumentException if coordinates are out of bounds
+     */
+    public Shot fireShot(String gameCode, UUID shooterId, int x, int y) {
+        Game game = gameRepository.findByGameCode(gameCode)
+                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
+
+        if (game.getStatus() != GameStatus.RUNNING) {
+            throw new IllegalStateException("Cannot fire shot when game is not RUNNING");
+        }
+
+        if (game.getCurrentTurnPlayerId() == null) {
+            throw new IllegalStateException("Game has no current turn player set");
+        }
+
+        if (!Objects.equals(game.getCurrentTurnPlayerId(), shooterId)) {
+            throw new IllegalStateException("It is not this player's turn");
+        }
+
+        Player shooter = game.getPlayers().stream()
+                .filter(p -> Objects.equals(p.getId(), shooterId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Shooter does not belong to this game"));
+
+        Board targetBoard = game.getBoards().stream()
+                .filter(b -> b.getOwner() != null && b.getOwner().getId() != null)
+                .filter(b -> !Objects.equals(b.getOwner().getId(), shooterId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("No opponent board found for this game"));
+
+        if (x < 0 || x >= targetBoard.getWidth() || y < 0 || y >= targetBoard.getHeight()) {
+            throw new IllegalArgumentException("Shot coordinate out of board bounds");
+        }
+
+        Coordinate coordinate = new Coordinate(x, y);
+        Shot shot = game.fireShot(shooter, targetBoard, coordinate);
+
+        Shot persistedShot = shotRepository.save(shot);
+
+        // Turn rule: a MISS switches the turn, HIT/SUNK keeps the turn.
+        if (shot.getResult() == ShotResult.MISS) {
+            UUID nextTurn = game.getPlayers().stream()
+                    .filter(p -> !Objects.equals(p.getId(), shooterId))
+                    .map(Player::getId)
+                    .findFirst()
+                    .orElse(shooterId);
+            game.setCurrentTurnPlayerId(nextTurn);
+        }
+
+        // Win check: defender has lost if all ship coordinates were hit on the target board.
+        boolean defenderAllSunk = targetBoard.getPlacements().stream()
+                .allMatch(p -> p.getCoveredCoordinates().stream().allMatch(shipCoord ->
+                        game.getShots().stream()
+                                .filter(s -> s.getTargetBoard().equals(targetBoard))
+                                .anyMatch(s -> s.getCoordinate().equals(shipCoord))
+                                || shipCoord.equals(coordinate)
+                ));
+
+        if (defenderAllSunk) {
+            game.setStatus(GameStatus.FINISHED);
+            game.setWinnerPlayerId(shooter.getId());
+        }
+
+        Game savedGame = gameRepository.save(game);
+
+        if (messagingTemplate != null) {
+            String destination = "/topic/games/" + gameCode + "/events";
+            Player defender = targetBoard.getOwner();
+
+            messagingTemplate.convertAndSend(destination,
+                    GameEventDto.shotFired(savedGame, shooter, defender, x, y, shot.getResult())
+            );
+
+            if (savedGame.getStatus() == GameStatus.FINISHED) {
+                messagingTemplate.convertAndSend(destination,
+                        GameEventDto.gameFinished(savedGame, shooter)
+                );
+            } else {
+                Player currentTurn = savedGame.getPlayers().stream()
+                        .filter(p -> Objects.equals(p.getId(), savedGame.getCurrentTurnPlayerId()))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
+
+                messagingTemplate.convertAndSend(destination,
+                        GameEventDto.turnChanged(savedGame, currentTurn, shot.getResult())
+                );
+            }
+        }
+
+        return persistedShot;
+    }
+
+    // --- Pause / Resume / Forfeit ---
 
     /**
      * Pauses a running game and notifies clients via WebSocket.
@@ -336,7 +598,6 @@ public class GameService {
         );
     }
 
-
     /**
      * Forfeits a running/paused game, determines the winner and notifies clients.
      *
@@ -378,251 +639,9 @@ public class GameService {
         return saved;
     }
 
-    /**
-     * Fires a shot for the current turn player and applies turn and win logic.
-     *
-     * <p>Validates:
-     * <ul>
-     *   <li>game is RUNNING</li>
-     *   <li>current turn is set</li>
-     *   <li>requester is the current turn player</li>
-     *   <li>coordinates are within opponent board bounds</li>
-     * </ul>
-     *
-     * <p>Turn rule:
-     * <ul>
-     *   <li>A MISS switches the turn to the opponent.</li>
-     *   <li>HIT/SUNK keeps the turn (classic Battleship rule).</li>
-     * </ul>
-     *
-     * @param gameCode public game identifier
-     * @param shooterId player firing the shot (must match current turn)
-     * @param x 0-based x coordinate
-     * @param y 0-based y coordinate
-     * @return persisted shot entity
-     * @throws EntityNotFoundException if the game does not exist
-     * @throws IllegalStateException if the shot is not allowed (wrong state/turn/player)
-     * @throws IllegalArgumentException if coordinates are out of bounds
-     */
-    public Shot fireShot(String gameCode, UUID shooterId, int x, int y) {
-        Game game = gameRepository.findByGameCode(gameCode)
-                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
-
-        if (game.getStatus() != GameStatus.RUNNING) {
-            throw new IllegalStateException("Cannot fire shot when game is not RUNNING");
-        }
-
-        if (game.getCurrentTurnPlayerId() == null) {
-            throw new IllegalStateException("Game has no current turn player set");
-        }
-
-        if (!Objects.equals(game.getCurrentTurnPlayerId(), shooterId)) {
-            throw new IllegalStateException("It is not this player's turn");
-        }
-
-        Player shooter = game.getPlayers().stream()
-                .filter(p -> Objects.equals(p.getId(), shooterId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Shooter does not belong to this game"));
-
-        Board targetBoard = game.getBoards().stream()
-                .filter(b -> b.getOwner() != null && b.getOwner().getId() != null)
-                .filter(b -> !Objects.equals(b.getOwner().getId(), shooterId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("No opponent board found for this game"));
-
-        if (x < 0 || x >= targetBoard.getWidth() || y < 0 || y >= targetBoard.getHeight()) {
-            throw new IllegalArgumentException("Shot coordinate out of board bounds");
-        }
-
-        Coordinate coordinate = new Coordinate(x, y);
-        Shot shot = game.fireShot(shooter, targetBoard, coordinate);
-
-        Shot persistedShot = shotRepository.save(shot);
-
-        // Turn rule: a MISS switches the turn, HIT/SUNK keeps the turn.
-        if (shot.getResult() == ShotResult.MISS) {
-            UUID nextTurn = game.getPlayers().stream()
-                    .filter(p -> !Objects.equals(p.getId(), shooterId))
-                    .map(Player::getId)
-                    .findFirst()
-                    .orElse(shooterId);
-            game.setCurrentTurnPlayerId(nextTurn);
-        }
-
-        // Win check: defender has lost if all ship coordinates were hit on the target board.
-        boolean defenderAllSunk = targetBoard.getPlacements().stream()
-                .allMatch(p -> p.getCoveredCoordinates().stream().allMatch(shipCoord ->
-                        game.getShots().stream()
-                                .filter(s -> s.getTargetBoard().equals(targetBoard))
-                                .anyMatch(s -> s.getCoordinate().equals(shipCoord))
-                                || shipCoord.equals(coordinate)
-                ));
-
-        if (defenderAllSunk) {
-            game.setStatus(GameStatus.FINISHED);
-            game.setWinnerPlayerId(shooter.getId());
-        }
-
-        Game savedGame = gameRepository.save(game);
-
-        if (messagingTemplate != null) {
-            String destination = "/topic/games/" + gameCode + "/events";
-            Player defender = targetBoard.getOwner();
-
-            messagingTemplate.convertAndSend(destination,
-                    GameEventDto.shotFired(savedGame, shooter, defender, x, y, shot.getResult())
-            );
-
-            if (savedGame.getStatus() == GameStatus.FINISHED) {
-                messagingTemplate.convertAndSend(destination,
-                        GameEventDto.gameFinished(savedGame, shooter)
-                );
-            } else {
-                Player currentTurn = savedGame.getPlayers().stream()
-                        .filter(p -> Objects.equals(p.getId(), savedGame.getCurrentTurnPlayerId()))
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
-
-                messagingTemplate.convertAndSend(destination,
-                        GameEventDto.turnChanged(savedGame, currentTurn, shot.getResult())
-                );
-            }
-        }
-
-        return persistedShot;
-    }
-
-    /**
-     * Re-generates a player's board during the setup phase.
-     *
-     * @param gameCode public game identifier
-     * @param playerId board owner
-     * @return board state including current placements
-     * @throws EntityNotFoundException if the game does not exist
-     * @throws IllegalStateException if the game is not in SETUP, the player has no board, or the board is locked
-     */
-    public BoardStateDto rerollBoard(String gameCode, UUID playerId) {
-        Game game = gameRepository.findByGameCode(gameCode)
-                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
-
-        if (game.getStatus() != GameStatus.SETUP) {
-            throw new IllegalStateException("Cannot reroll board when game is not in SETUP");
-        }
-
-        Board board = game.getBoards().stream()
-                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
-
-        if (board.isLocked()) {
-            throw new IllegalStateException("Board is locked and cannot be rerolled");
-        }
-
-        board.clearPlacements();
-        autoPlaceFleet(board, game.getConfig());
-
-        gameRepository.save(game);
-
-        return new BoardStateDto(
-                board.getId(),
-                board.getWidth(),
-                board.getHeight(),
-                board.isLocked(),
-                board.getPlacements().stream().map(ShipPlacementDto::from).toList()
-        );
-    }
-
-    /**
-     * Locks a player's board (confirmation) and starts the game once both boards are confirmed.
-     *
-     * <p>When the second board is confirmed, the game transitions to RUNNING and the initial turn
-     * player is selected randomly if not already set.
-     *
-     * @param gameCode public game identifier
-     * @param playerId confirming player id
-     * @return public state view for the confirming player
-     * @throws EntityNotFoundException if the game does not exist
-     * @throws IllegalStateException if the game is not in SETUP, board is invalid, or already locked
-     */
-    public GamePublicDto confirmBoard(String gameCode, UUID playerId) {
-        Game game = gameRepository.findByGameCode(gameCode)
-                .orElseThrow(() -> new EntityNotFoundException("Game not found: " + gameCode));
-
-        if (game.getStatus() != GameStatus.SETUP) {
-            throw new IllegalStateException("Cannot confirm board when game is not in SETUP");
-        }
-
-        Board board = game.getBoards().stream()
-                .filter(b -> Objects.equals(b.getOwner().getId(), playerId))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Player does not have a board in this game"));
-
-        int expectedShips = parseFleetDefinition(game.getConfig()).size();
-        if (board.getPlacements().size() != expectedShips) {
-            throw new IllegalStateException(
-                    "Board is not ready: expected " + expectedShips + " ships but found " + board.getPlacements().size()
-            );
-        }
-
-        if (board.isLocked()) {
-            throw new IllegalStateException("Board is already confirmed");
-        }
-
-        board.setLocked(true);
-
-        boolean allLocked = game.getBoards().stream().allMatch(Board::isLocked);
-        if (allLocked) {
-            game.setStatus(GameStatus.RUNNING);
-
-            if (game.getCurrentTurnPlayerId() == null) {
-                List<Player> players = game.getPlayers();
-                if (players.size() != 2) {
-                    throw new IllegalStateException("Cannot start game without exactly 2 players");
-                }
-                int idx = ThreadLocalRandom.current().nextInt(players.size());
-                game.setCurrentTurnPlayerId(players.get(idx).getId());
-            }
-        }
-
-        Game saved = gameRepository.save(game);
-
-        if (messagingTemplate != null) {
-            String destination = "/topic/games/" + gameCode + "/events";
-
-            Player confirmingPlayer = saved.getPlayers().stream()
-                    .filter(p -> Objects.equals(p.getId(), playerId))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException("Player not found in this game"));
-
-            messagingTemplate.convertAndSend(destination, GameEventDto.boardConfirmed(saved, confirmingPlayer));
-
-            if (allLocked) {
-                Player currentTurnPlayer = saved.getPlayers().stream()
-                        .filter(p -> Objects.equals(p.getId(), saved.getCurrentTurnPlayerId()))
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalStateException("Current turn player not found"));
-
-                messagingTemplate.convertAndSend(destination, GameEventDto.gameStarted(saved, currentTurnPlayer));
-            }
-        }
-
-        return toPublicDto(saved, playerId);
-    }
-
-    /**
-     * Creates a game and immediately joins the first player.
-     *
-     * @param username username of the first player
-     * @return updated game including the first joined player and board
-     */
-    @Transactional
-    public Game createGameAndJoinFirstPlayer(String username) {
-        GameConfiguration config = GameConfiguration.defaultConfig();
-        Game game = new Game(config);
-        game = gameRepository.save(game);
-        return joinGame(game.getGameCode(), username);
-    }
+    // =========================
+    // 3) DEV-ONLY
+    // =========================
 
     /**
      * DEV-only: Returns full board state (including ship placements) for debugging.
@@ -675,7 +694,11 @@ public class GameService {
         return renderBoardAscii(board, shotsOnThisBoard, showShips);
     }
 
-    // ----------------- helpers -----------------
+    // =========================
+    // 4) HELPERS
+    // =========================
+
+    // --- WebSocket event helpers ---
 
     /**
      * Sends a "resume pending" event to clients.
@@ -708,6 +731,121 @@ public class GameService {
                         currentTurnPlayer == null ? null : currentTurnPlayer.getUsername()));
     }
 
+    // --- DTO mapping ---
+
+    /**
+     * Maps a {@code Game} to a public DTO that is safe for clients.
+     *
+     * <p>Intentionally hides information that could be used for cheating:
+     * opponent ship placements are not included and only minimal state is returned.
+     *
+     * @param game current game
+     * @param requesterPlayerId requesting player id
+     * @return public view DTO for the requester
+     */
+    private GamePublicDto toPublicDto(Game game, UUID requesterPlayerId) {
+        // Extract common game state using helper methods
+        Player opponent = findOpponent(game, requesterPlayerId);
+        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
+
+        Board yourBoard = boardByOwnerId.get(requesterPlayerId);
+        Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
+
+        boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
+        boolean opponentBoardLocked = oppBoard != null && oppBoard.isLocked();
+        boolean yourTurn = isYourTurn(game, requesterPlayerId);
+
+        String opponentName = (opponent == null) ? null : opponent.getUsername();
+
+        return new GamePublicDto(
+                game.getGameCode(),
+                game.getStatus(),
+                yourBoardLocked,
+                opponentBoardLocked,
+                yourTurn,
+                opponentName
+        );
+    }
+
+    /**
+     * Maps a {@code Game} to a snapshot DTO for a specific viewer.
+     *
+     * <p>Snapshot rules:
+     * <ul>
+     *   <li>Own board: ship placements are visible.</li>
+     *   <li>Opponent board: ship placements remain hidden.</li>
+     *   <li>Shots: include shots on own board and shots fired by the viewer on opponent board.</li>
+     * </ul>
+     *
+     * @param game current game
+     * @param viewerPlayerId viewer player id
+     * @return snapshot DTO for the viewer
+     */
+    private GameSnapshotDto toSnapshot(Game game, UUID viewerPlayerId) {
+        // Extract common game state
+        Player you = findViewer(game, viewerPlayerId);
+        Player opponent = findOpponent(game, viewerPlayerId);
+        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
+
+        Board yourBoard = boardByOwnerId.get(viewerPlayerId);
+        Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
+
+        boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
+        boolean oppBoardLocked = oppBoard != null && oppBoard.isLocked();
+        boolean yourTurn = isYourTurn(game, viewerPlayerId);
+
+        // Build shots lists
+        List<Shot> allShots = game.getShots() == null ? List.of() : game.getShots();
+
+        // Your board DTO with ship placements visible
+        BoardStateDto yourBoardDto = (yourBoard == null)
+                ? null
+                : new BoardStateDto(
+                yourBoard.getId(),
+                yourBoard.getWidth(),
+                yourBoard.getHeight(),
+                yourBoard.isLocked(),
+                yourBoard.getPlacements().stream().map(ShipPlacementDto::from).toList()
+        );
+
+        // Shots on your board (incoming shots from opponent)
+        List<ShotViewDto> shotsOnYourBoard = (yourBoard == null)
+                ? List.of()
+                : allShots.stream()
+                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(yourBoard))
+                .map(ShotViewDto::from)
+                .toList();
+
+        // Your shots on opponent board (outgoing shots you fired)
+        List<ShotViewDto> yourShotsOnOpponent = (oppBoard == null)
+                ? List.of()
+                : allShots.stream()
+                .filter(s -> s.getShooter() != null && Objects.equals(s.getShooter().getId(), viewerPlayerId))
+                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(oppBoard))
+                .map(ShotViewDto::from)
+                .toList();
+
+        int w = game.getConfig().getBoardWidth();
+        int h = game.getConfig().getBoardHeight();
+
+        return new GameSnapshotDto(
+                game.getGameCode(),
+                game.getStatus(),
+                w,
+                h,
+                you.getUsername(),
+                opponent == null ? null : opponent.getUsername(),
+                yourBoardLocked,
+                oppBoardLocked,
+                yourTurn,
+                yourBoardDto,
+                shotsOnYourBoard,
+                yourShotsOnOpponent
+        );
+    }
+
+    // --- Domain navigation / utility ---
+
     /**
      * Returns the username of the current turn player, or null if no turn is set.
      *
@@ -724,6 +862,71 @@ public class GameService {
                 .findFirst()
                 .orElse(null);
     }
+
+    /**
+     * Finds the opponent player for a given viewer in the game.
+     *
+     * @param game the game
+     * @param viewerPlayerId ID of the viewer player
+     * @return opponent player, or null if not found (single-player scenario or missing opponent)
+     */
+    private Player findOpponent(Game game, UUID viewerPlayerId) {
+        return game.getPlayers().stream()
+                .filter(p -> p != null && p.getId() != null)
+                .filter(p -> !Objects.equals(p.getId(), viewerPlayerId))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Finds the viewer player in the game.
+     *
+     * @param game the game
+     * @param viewerPlayerId ID of the viewer player
+     * @return viewer player
+     * @throws IllegalStateException if viewer player is not found in the game
+     */
+    private Player findViewer(Game game, UUID viewerPlayerId) {
+        return game.getPlayers().stream()
+                .filter(p -> p != null && p.getId() != null)
+                .filter(p -> Objects.equals(p.getId(), viewerPlayerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + viewerPlayerId));
+    }
+
+    /**
+     * Builds a map of boards indexed by their owner's player ID.
+     *
+     * <p>Filters out null boards and boards without valid owners.
+     *
+     * @param game the game
+     * @return map of player ID to board
+     */
+    private Map<UUID, Board> buildBoardMap(Game game) {
+        Map<UUID, Board> boardByOwnerId = new HashMap<>();
+        for (Board b : game.getBoards()) {
+            if (b == null || b.getOwner() == null || b.getOwner().getId() == null) {
+                continue;
+            }
+            boardByOwnerId.put(b.getOwner().getId(), b);
+        }
+        return boardByOwnerId;
+    }
+
+    /**
+     * Determines if it's currently the viewer's turn.
+     *
+     * @param game the game
+     * @param playerId ID of the player to check
+     * @return true if game is running and it's the player's turn
+     */
+    private boolean isYourTurn(Game game, UUID playerId) {
+        return game.getStatus() == GameStatus.RUNNING
+                && game.getCurrentTurnPlayerId() != null
+                && Objects.equals(game.getCurrentTurnPlayerId(), playerId);
+    }
+
+    // --- Fleet / board generation ---
 
     /**
      * Parses the fleet definition string into a flat list of ship types.
@@ -976,180 +1179,4 @@ public class GameService {
 
         return true;
     }
-
-    /**
-     * Maps a {@code Game} to a public DTO that is safe for clients.
-     *
-     * <p>Intentionally hides information that could be used for cheating:
-     * opponent ship placements are not included and only minimal state is returned.
-     *
-     * @param game current game
-     * @param requesterPlayerId requesting player id
-     * @return public view DTO for the requester
-     */
-    private GamePublicDto toPublicDto(Game game, UUID requesterPlayerId) {
-        // Extract common game state using helper methods
-        Player opponent = findOpponent(game, requesterPlayerId);
-        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
-
-        Board yourBoard = boardByOwnerId.get(requesterPlayerId);
-        Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
-
-        boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
-        boolean opponentBoardLocked = oppBoard != null && oppBoard.isLocked();
-        boolean yourTurn = isYourTurn(game, requesterPlayerId);
-
-        String opponentName = (opponent == null) ? null : opponent.getUsername();
-
-        return new GamePublicDto(
-                game.getGameCode(),
-                game.getStatus(),
-                yourBoardLocked,
-                opponentBoardLocked,
-                yourTurn,
-                opponentName
-        );
-    }
-
-    /**
-     * Maps a {@code Game} to a snapshot DTO for a specific viewer.
-     *
-     * <p>Snapshot rules:
-     * <ul>
-     *   <li>Own board: ship placements are visible.</li>
-     *   <li>Opponent board: ship placements remain hidden.</li>
-     *   <li>Shots: include shots on own board and shots fired by the viewer on opponent board.</li>
-     * </ul>
-     *
-     * @param game current game
-     * @param viewerPlayerId viewer player id
-     * @return snapshot DTO for the viewer
-     */
-    private GameSnapshotDto toSnapshot(Game game, UUID viewerPlayerId) {
-        // Extract common game state
-        Player you = findViewer(game, viewerPlayerId);
-        Player opponent = findOpponent(game, viewerPlayerId);
-        Map<UUID, Board> boardByOwnerId = buildBoardMap(game);
-
-        Board yourBoard = boardByOwnerId.get(viewerPlayerId);
-        Board oppBoard = (opponent == null) ? null : boardByOwnerId.get(opponent.getId());
-
-        boolean yourBoardLocked = yourBoard != null && yourBoard.isLocked();
-        boolean oppBoardLocked = oppBoard != null && oppBoard.isLocked();
-        boolean yourTurn = isYourTurn(game, viewerPlayerId);
-
-        // Build shots lists
-        List<Shot> allShots = game.getShots() == null ? List.of() : game.getShots();
-
-        // Your board DTO with ship placements visible
-        BoardStateDto yourBoardDto = (yourBoard == null)
-                ? null
-                : new BoardStateDto(
-                yourBoard.getId(),
-                yourBoard.getWidth(),
-                yourBoard.getHeight(),
-                yourBoard.isLocked(),
-                yourBoard.getPlacements().stream().map(ShipPlacementDto::from).toList()
-        );
-
-        // Shots on your board (incoming shots from opponent)
-        List<ShotViewDto> shotsOnYourBoard = (yourBoard == null)
-                ? List.of()
-                : allShots.stream()
-                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(yourBoard))
-                .map(ShotViewDto::from)
-                .toList();
-
-        // Your shots on opponent board (outgoing shots you fired)
-        List<ShotViewDto> yourShotsOnOpponent = (oppBoard == null)
-                ? List.of()
-                : allShots.stream()
-                .filter(s -> s.getShooter() != null && Objects.equals(s.getShooter().getId(), viewerPlayerId))
-                .filter(s -> s.getTargetBoard() != null && s.getTargetBoard().equals(oppBoard))
-                .map(ShotViewDto::from)
-                .toList();
-
-        int w = game.getConfig().getBoardWidth();
-        int h = game.getConfig().getBoardHeight();
-
-        return new GameSnapshotDto(
-                game.getGameCode(),
-                game.getStatus(),
-                w,
-                h,
-                you.getUsername(),
-                opponent == null ? null : opponent.getUsername(),
-                yourBoardLocked,
-                oppBoardLocked,
-                yourTurn,
-                yourBoardDto,
-                shotsOnYourBoard,
-                yourShotsOnOpponent
-        );
-    }
-
-
-
-/**
- * Finds the opponent player for a given viewer in the game.
- *
- * @param game the game
- * @param viewerPlayerId ID of the viewer player
- * @return opponent player, or null if not found (single-player scenario or missing opponent)
- */
-private Player findOpponent(Game game, UUID viewerPlayerId) {
-    return game.getPlayers().stream()
-            .filter(p -> p != null && p.getId() != null)
-            .filter(p -> !Objects.equals(p.getId(), viewerPlayerId))
-            .findFirst()
-            .orElse(null);
-}
-
-/**
- * Finds the viewer player in the game.
- *
- * @param game the game
- * @param viewerPlayerId ID of the viewer player
- * @return viewer player
- * @throws IllegalStateException if viewer player is not found in the game
- */
-private Player findViewer(Game game, UUID viewerPlayerId) {
-    return game.getPlayers().stream()
-            .filter(p -> p != null && p.getId() != null)
-            .filter(p -> Objects.equals(p.getId(), viewerPlayerId))
-            .findFirst()
-            .orElseThrow(() -> new IllegalStateException("Player not found in this game: " + viewerPlayerId));
-}
-
-/**
- * Builds a map of boards indexed by their owner's player ID.
- *
- * <p>Filters out null boards and boards without valid owners.
- *
- * @param game the game
- * @return map of player ID to board
- */
-private Map<UUID, Board> buildBoardMap(Game game) {
-    Map<UUID, Board> boardByOwnerId = new HashMap<>();
-    for (Board b : game.getBoards()) {
-        if (b == null || b.getOwner() == null || b.getOwner().getId() == null) {
-            continue;
-        }
-        boardByOwnerId.put(b.getOwner().getId(), b);
-    }
-    return boardByOwnerId;
-}
-
-/**
- * Determines if it's currently the viewer's turn.
- *
- * @param game the game
- * @param playerId ID of the player to check
- * @return true if game is running and it's the player's turn
- */
-private boolean isYourTurn(Game game, UUID playerId) {
-    return game.getStatus() == GameStatus.RUNNING
-            && game.getCurrentTurnPlayerId() != null
-            && Objects.equals(game.getCurrentTurnPlayerId(), playerId);
-}
 }
