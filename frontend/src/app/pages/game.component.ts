@@ -52,6 +52,7 @@ type GameStateDto = {
 
 type GameEventDto = {
   type: string;
+  gameStatus?: 'WAITING' | 'SETUP' | 'RUNNING' | 'PAUSED' | 'FINISHED';
   payload: Record<string, any>;
 };
 
@@ -113,6 +114,10 @@ export class GameComponent implements OnInit, OnDestroy {
   forfeitedByName = '';
   /** Resume token for paused games. */
   resumeToken = '';
+  /** Winner name from WS event. */
+  winnerName = '';
+  /** Player that still needs to confirm resume (for UI hint). */
+  resumePendingName = '';
 
   // Loading flags / errors
   loading = false;
@@ -602,9 +607,21 @@ export class GameComponent implements OnInit, OnDestroy {
 
     this.zone.run(() => {
       if (evt.type === 'SHOT_FIRED') {
-        const { x, y, result } = evt.payload || {};
+        const { x, y, result, shooterPlayerName } = evt.payload || {};
         if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
           this.applyShot('me', x, y, result);
+        }
+        if (evt.gameStatus === 'FINISHED' && shooterPlayerName) {
+          this.winnerName = shooterPlayerName;
+        }
+        this.loadStateSnapshot();
+        return;
+      }
+
+      if (evt.type === 'PLAYER_RECONNECTED') {
+        const { reconnectedPlayerName } = evt.payload || {};
+        if (evt.gameStatus === 'WAITING' && reconnectedPlayerName) {
+          this.resumePendingName = reconnectedPlayerName;
         }
         this.loadStateSnapshot();
         return;
@@ -617,6 +634,10 @@ export class GameComponent implements OnInit, OnDestroy {
         return;
       }
 
+      if (evt.type === 'GAME_RESUMED') {
+        this.resumePendingName = '';
+      }
+
       if ([
         'BOARD_CONFIRMED',
         'GAME_STARTED',
@@ -625,8 +646,7 @@ export class GameComponent implements OnInit, OnDestroy {
         'GAME_FORFEITED',
         'GAME_PAUSED',
         'GAME_RESUMED',
-        'PLAYER_DISCONNECTED',
-        'PLAYER_RECONNECTED'
+        'PLAYER_DISCONNECTED'
       ].includes(evt.type)) {
         this.loadStateSnapshot();
         return;
