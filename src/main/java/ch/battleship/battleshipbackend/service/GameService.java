@@ -569,7 +569,8 @@ public class GameService {
             game.setResumeReadyPlayerId(requestedByPlayerId);
 
             saved = gameRepository.save(game);
-            sendEventWaiting(saved, resolvedRequestedBy);
+            //sendEventWaiting(saved, resolvedRequestedBy);
+            sendEventResumed(saved, resolvedRequestedBy);
         } else {
             // status == WAITING
             if (Objects.equals(first, requestedByPlayerId)) {
