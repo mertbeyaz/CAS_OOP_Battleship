@@ -30,14 +30,10 @@ type LobbyDto = {
 type ResumeResponseDto = {
   status: string;
   snapshot?: {
+    gameCode?: string;
+    yourPlayerId?: string;
     youName?: string;
   };
-};
-
-type ResumePlayer = {
-  gameCode: string;
-  playerId: string;
-  playerName: string;
 };
 
 @Component({
@@ -61,27 +57,6 @@ export class LandingComponent {
   loadingJoin = false;
   errorJoin = '';
 
-
-  // ----------------------------
-  // Local storage helpers
-  // ----------------------------
-  private resumePlayerKey(token: string) {
-    return `resumePlayer:${token}`;
-  }
-
-  private saveResumePlayer(resumeToken?: string, gameCode?: string, playerId?: string, playerName?: string) {
-    if (!resumeToken || !gameCode || !playerId || !playerName) return;
-    localStorage.setItem(
-      this.resumePlayerKey(resumeToken),
-      JSON.stringify({ gameCode, playerId, playerName })
-    );
-  }
-
-  private loadResumePlayer(resumeToken: string): ResumePlayer | null {
-    const raw = localStorage.getItem(this.resumePlayerKey(resumeToken));
-    return raw ? JSON.parse(raw) : null;
-  }
-
   // ----------------------------
   // Actions
   // ----------------------------
@@ -102,7 +77,6 @@ export class LandingComponent {
       .subscribe({
         next: (res) => {
           this.loadingQuick = false;
-          this.saveResumePlayer(res.resumeToken, res.gameCode, res.myPlayerId, res.myPlayerName);
 
           this.router.navigate(['/game'], {
             queryParams: {
@@ -140,12 +114,13 @@ export class LandingComponent {
       .post<ResumeResponseDto>(`${API_BASE_URL}/games/resume`, { token })
       .subscribe({
         next: (res) => {
-          const resumePlayer = this.loadResumePlayer(token);
-          if (!resumePlayer) {
+          const snapshot = res.snapshot;
+          if (!snapshot?.gameCode || !snapshot?.yourPlayerId || !snapshot?.youName) {
             this.loadingJoin = false;
-            this.errorJoin = 'Resume-Token unbekannt. Bitte auf demselben Browser/Device starten.';
+            this.errorJoin = 'Resume fehlgeschlagen: unvollstaendige Daten.';
             return;
           }
+
           if (res.status !== 'PAUSED' && res.status !== 'WAITING') {
             this.loadingJoin = false;
             this.errorJoin = 'Resume nur moeglich, wenn Spiel PAUSED oder WAITING ist.';
@@ -155,9 +130,9 @@ export class LandingComponent {
           this.loadingJoin = false;
           this.router.navigate(['/game'], {
             queryParams: {
-              gameCode: resumePlayer.gameCode,
-              playerId: resumePlayer.playerId,
-              playerName: resumePlayer.playerName,
+              gameCode: snapshot.gameCode,
+              playerId: snapshot.yourPlayerId,
+              playerName: snapshot.youName,
               resumeToken: token,
             },
           });
