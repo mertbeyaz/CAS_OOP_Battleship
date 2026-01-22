@@ -81,6 +81,23 @@ public record GameEventDto(
     }
 
     /**
+     * Creates a PLAYER_JOINED event.
+     *
+     * @param game the game
+     * @param joiningPlayerName name of the player who joined
+     * @return event DTO
+     */
+    public static GameEventDto playerJoined(Game game, String joiningPlayerName) {
+        return new GameEventDto(
+                GameEventType.PLAYER_JOINED,
+                game.getGameCode(),
+                game.getStatus(),
+                Instant.now(),
+                Map.of("playerName", joiningPlayerName)
+        );
+    }
+
+    /**
      * Creates an event indicating that the game started and whose turn it is first.
      *
      * @param game game instance

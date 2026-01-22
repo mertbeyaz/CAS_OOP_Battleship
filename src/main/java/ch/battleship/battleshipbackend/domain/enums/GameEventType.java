@@ -58,6 +58,11 @@ public enum GameEventType {
     TURN_CHANGED,
 
     /**
+     * A player has joined the game.
+     */
+    PLAYER_JOINED,
+
+    /**
      * A player has disconnected (WebSocket connection lost).
      * The game will be moved to WAITING status and both players need to resume.
      */

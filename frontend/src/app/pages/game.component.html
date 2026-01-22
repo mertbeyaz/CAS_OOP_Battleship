@@ -24,8 +24,22 @@
           <p class="label">Game Code</p>
           <p class="value">{{ game.gameCode }}</p>
         </div>
+
+        <div *ngIf="showDisconnectBanner"
+             class="pill"
+             [class.warn]="opponentDisconnected"
+             [class.success]="!opponentDisconnected">
+          {{ disconnectMessage }}
+        </div>
+
         <div *ngIf="game.status === 'WAITING' && waitingForResume" class="pill warn">
           Resume gedrückt - warte auf Gegner...
+        </div>
+        <div *ngIf="showPauseBanner" class="pill warn">
+          ⏸️ {{ pauseMessage }}
+        </div>
+        <div *ngIf="showResumeBanner" class="pill success">
+          ▶️ {{ resumeMessage }}
         </div>
         <div *ngIf="resumePendingName" class="pill warn">
           Warte auf Resume von: {{ resumePendingName }}
@@ -74,7 +88,7 @@
               <button (click)="pauseGame()" [disabled]="game.status !== 'RUNNING' || pauseLoading">
                 Pause
               </button>
-              <button (click)="resumeGame()" [disabled]="game.status !== 'PAUSED' && game.status !== 'WAITING'">
+              <button (click)="resumeGame()" [disabled]="!canResume()">
                 Resume
               </button>
               <button class="forfeit" (click)="forfeitGame()" [disabled]="forfeitLoading || game.status === 'FINISHED'">
@@ -83,7 +97,16 @@
             </td>
           </tr>
           <tr>
-            <td>{{ game.opponentName || 'Gegner' }}</td>
+            <td>
+              {{ game.opponentName || 'Gegner' }}
+              <!-- ⭐ NEU: Connection Status Badge (permanent) -->
+              <span *ngIf="game.opponentName"
+                    class="status-badge"
+                    [class.offline]="opponentDisconnected"
+                    [class.online]="!opponentDisconnected">
+                {{ opponentDisconnected ? '🔴 Offline' : '🟢 Online' }}
+              </span>
+            </td>
             <td>{{ game.opponentBoardLocked ? 'Ready' : 'Wartet...' }}</td>
             <td></td>
           </tr>

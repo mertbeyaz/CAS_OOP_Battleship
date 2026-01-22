@@ -6,6 +6,7 @@ import ch.battleship.battleshipbackend.domain.enums.LobbyEventType;
 import ch.battleship.battleshipbackend.domain.enums.LobbyStatus;
 import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.LobbyRepository;
+import ch.battleship.battleshipbackend.web.api.dto.GameEventDto;
 import ch.battleship.battleshipbackend.web.api.dto.LobbyEventDto;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -91,6 +92,7 @@ public class LobbyService {
                 lobby.setStatus(LobbyStatus.FULL);
                 lobbyRepository.save(lobby);
 
+                // 1. Send LOBBY event
                 LobbyEventDto event = new LobbyEventDto(
                         LobbyEventType.LOBBY_FULL,
                         lobby.getLobbyCode(),
@@ -101,6 +103,11 @@ public class LobbyService {
 
                 String destination = "/topic/lobbies/" + lobby.getLobbyCode() + "/events";
                 messagingTemplate.convertAndSend(destination, event);
+
+                // 2. Send GAME event so 2nd player can react
+                GameEventDto gameEvent = GameEventDto.playerJoined(game, username);
+                String gameDestination = "/topic/games/" + game.getGameCode() + "/events";
+                messagingTemplate.convertAndSend(gameDestination, gameEvent);
             }
 
             return lobby;

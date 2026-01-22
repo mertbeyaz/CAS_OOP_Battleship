@@ -118,7 +118,23 @@ export class GameComponent implements OnInit, OnDestroy {
   winnerName = '';
   /** Player that still needs to confirm resume (for UI hint). */
   resumePendingName = '';
-
+  /** True if this session was started via resume token from landing page. */
+  private startedViaResume = false;
+  // Connection status tracking
+  /** True if opponent is currently disconnected. */
+  opponentDisconnected = false;
+  /** Message to show in disconnect banner. */
+  disconnectMessage = '';
+  /** True to show the disconnect banner temporarily. */
+  showDisconnectBanner = false;
+  /** Message to show if a game was paused **/
+  pauseMessage = '';
+  /** True if a game was paused **/
+  showPauseBanner = false;
+  /** Message to show if a player has resumed a game **/
+  resumeMessage = '';
+  /** True to show the resume banner **/
+  showResumeBanner = false;
   // Loading flags / errors
   loading = false;
   readyLoading = false;
@@ -186,6 +202,7 @@ export class GameComponent implements OnInit, OnDestroy {
 
       if (this.gameCode && this.myPlayerId) {
         this.loadStateSnapshot();
+        this.connectWs();
       } else {
         this.error = 'Fehlende Parameter.';
       }
@@ -321,6 +338,50 @@ export class GameComponent implements OnInit, OnDestroy {
    */
   canShoot() {
     return this.isMyTurn() && !this.shotLoading;
+  }
+
+  /**
+   * Determines if the Resume button should be enabled.
+   *
+   * Resume is allowed when:
+   * - Status is PAUSED (game was paused)
+   * - Status is WAITING AND resumePendingName is set (resume handshake in progress)
+   *
+   * Resume is NOT allowed when:
+   * - Status is WAITING but no handshake (initial lobby creation)
+   * - User already resumed via landing page (startedViaResume = true)
+   * - Status is SETUP, RUNNING, or FINISHED
+   *
+   * @returns true if resume button should be enabled
+   */
+  canResume(): boolean {
+    if (!this.game) {
+      return false;
+    }
+
+    // PAUSED: Always allow resume
+    if (this.game.status === 'PAUSED') {
+      return true;
+    }
+
+    // WAITING: Only allow if resume handshake is in progress
+    if (this.game.status === 'WAITING') {
+      // Already resumed via landing page? Don't allow again
+      if (this.startedViaResume) {
+        return false;
+      }
+
+      // Handshake in progress? (opponent resumed, we need to resume too)
+      if (this.resumePendingName) {
+        return true;
+      }
+
+      // Initial lobby creation? No resume
+      return false;
+    }
+
+    // All other statuses: no resume
+    return false;
   }
 
   /**
@@ -606,6 +667,72 @@ export class GameComponent implements OnInit, OnDestroy {
     const evt = JSON.parse(msg.body) as GameEventDto;
 
     this.zone.run(() => {
+
+      if (evt.type === 'PLAYER_JOINED') {
+        //console.log('Player joined:', evt.payload?.playerName);
+        this.loadStateSnapshot();
+        return;
+      }
+
+      if (evt.type === 'PLAYER_DISCONNECTED') {
+        const { disconnectedPlayerName } = evt.payload || {};
+
+        console.log('Player disconnected:', disconnectedPlayerName);
+
+        if (disconnectedPlayerName && disconnectedPlayerName !== this.myPlayerName) {
+          this.opponentDisconnected = true;
+          this.disconnectMessage = `${disconnectedPlayerName} hat die Verbindung verloren`;
+          this.showDisconnectBanner = true;
+
+          this.cdr.markForCheck();
+
+          setTimeout(() => {
+            this.showDisconnectBanner = false;
+            this.cdr.markForCheck();
+          }, 3000);
+        }
+
+        this.loadStateSnapshot();
+        return;
+      }
+
+      if (evt.type === 'PLAYER_RECONNECTED') {
+        const { reconnectedPlayerName } = evt.payload || {};
+
+        if (this.game) {
+          this.game.status = evt.gameStatus || this.game.status;
+        }
+
+        console.log('Player reconnected:', reconnectedPlayerName);
+
+        if (reconnectedPlayerName && reconnectedPlayerName !== this.myPlayerName) {
+          this.opponentDisconnected = false;
+          this.disconnectMessage = `${reconnectedPlayerName} ist wieder verbunden! 🎉`;
+          this.showDisconnectBanner = true;
+
+          this.cdr.markForCheck();
+
+          setTimeout(() => {
+            this.showDisconnectBanner = false;
+            this.cdr.markForCheck();
+          }, 3000);
+        }
+
+        if (evt.gameStatus === 'WAITING') {
+          if (reconnectedPlayerName && reconnectedPlayerName !== this.myPlayerName) {
+            this.resumePendingName = this.myPlayerName;
+          } else if (reconnectedPlayerName === this.myPlayerName) {
+            this.resumePendingName = '';
+          }
+        } else {
+          this.resumePendingName = '';
+        }
+
+        this.cdr.markForCheck();
+        this.loadStateSnapshot();
+        return;
+      }
+
       if (evt.type === 'SHOT_FIRED') {
         const { x, y, result, shooterPlayerName } = evt.payload || {};
         if (!(this.lastShotSent && this.lastShotSent.x === x && this.lastShotSent.y === y)) {
@@ -618,15 +745,6 @@ export class GameComponent implements OnInit, OnDestroy {
         return;
       }
 
-      if (evt.type === 'PLAYER_RECONNECTED') {
-        const { reconnectedPlayerName } = evt.payload || {};
-        if (evt.gameStatus === 'WAITING' && reconnectedPlayerName) {
-          this.resumePendingName = reconnectedPlayerName;
-        }
-        this.loadStateSnapshot();
-        return;
-      }
-
       if (evt.type === 'GAME_FORFEITED') {
         const { forfeitingPlayerName } = evt.payload || {};
         this.forfeitedByName = forfeitingPlayerName || '';
@@ -634,8 +752,80 @@ export class GameComponent implements OnInit, OnDestroy {
         return;
       }
 
+      if (evt.type === 'GAME_PAUSED') {
+        const { requestedByPlayerName } = evt.payload || {};
+
+        if (this.game) {
+          this.game.status = evt.gameStatus || this.game.status;
+        }
+
+        if (requestedByPlayerName && requestedByPlayerName !== this.myPlayerName) {
+
+          if (!this.opponentDisconnected) {
+            this.pauseMessage = `${requestedByPlayerName} hat das Spiel pausiert`;
+            this.showPauseBanner = true;
+            this.cdr.markForCheck();
+
+            setTimeout(() => {
+              this.showPauseBanner = false;
+              this.cdr.markForCheck();
+            }, 3000);
+          }
+        }
+
+        this.cdr.markForCheck();
+        this.loadStateSnapshot();
+        return;
+      }
+
       if (evt.type === 'GAME_RESUMED') {
-        this.resumePendingName = '';
+        console.log('▶️ GAME_RESUMED event received!');
+        const { requestedByPlayerName, currentTurnPlayerName } = evt.payload || {};
+
+        console.log('  requestedByPlayerName:', requestedByPlayerName);
+        console.log('  evt.gameStatus:', evt.gameStatus);
+
+        if (this.game) {
+          console.log('  BEFORE status:', this.game.status);
+          this.game.status = evt.gameStatus || this.game.status;
+          console.log('  AFTER status:', this.game.status);
+        }
+
+        if (evt.gameStatus === 'RUNNING') {
+          this.resumePendingName = '';
+          this.pauseMessage = '';
+          this.showPauseBanner = false;
+        }
+
+        if (requestedByPlayerName && requestedByPlayerName !== this.myPlayerName) {
+          console.log('  ✅ Opponent resumed!');
+
+          if (evt.gameStatus === 'RUNNING') {
+            console.log('    → RUNNING: Both resumed!');
+            this.resumeMessage = `${requestedByPlayerName} hat resumed - Spiel läuft weiter! 🎉`;
+            this.resumePendingName = '';  // Clear
+          } else {
+            console.log('    → WAITING: First resume!');
+            this.resumeMessage = `${requestedByPlayerName} hat resumed - warte auf dich!`;
+            this.resumePendingName = this.myPlayerName;  // Set!
+          }
+
+          this.showResumeBanner = true;
+          this.cdr.markForCheck();
+
+          setTimeout(() => {
+            this.showResumeBanner = false;
+            this.cdr.markForCheck();
+          }, 8000);
+        }
+
+        // Clear Pause
+        this.pauseMessage = '';
+        this.showPauseBanner = false;
+
+        this.cdr.markForCheck();
+        this.loadStateSnapshot();
+        return;
       }
 
       if ([
@@ -651,6 +841,7 @@ export class GameComponent implements OnInit, OnDestroy {
         this.loadStateSnapshot();
         return;
       }
+
     });
   }
 
