@@ -833,6 +833,7 @@ public class GameService {
                 game.getStatus(),
                 w,
                 h,
+                viewerPlayerId.toString(),
                 you.getUsername(),
                 opponent == null ? null : opponent.getUsername(),
                 yourBoardLocked,

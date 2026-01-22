@@ -3,6 +3,7 @@ package ch.battleship.battleshipbackend.web.api.dto;
 import ch.battleship.battleshipbackend.domain.enums.GameStatus;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Player-specific snapshot of the game state.
@@ -25,6 +26,7 @@ import java.util.List;
  * @param status current game status
  * @param boardWidth configured board width
  * @param boardHeight configured board height
+ * @param yourPlayerId Id of the requesting player
  * @param youName username of the requesting player
  * @param opponentName opponent username (null if opponent not present yet)
  * @param yourBoardLocked whether your board is confirmed/locked
@@ -40,6 +42,7 @@ public record GameSnapshotDto(
         int boardWidth,
         int boardHeight,
 
+        String yourPlayerId,
         String youName,
         String opponentName,
 
