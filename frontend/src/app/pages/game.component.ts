@@ -669,7 +669,16 @@ export class GameComponent implements OnInit, OnDestroy {
     this.zone.run(() => {
 
       if (evt.type === 'PLAYER_JOINED') {
-        //console.log('Player joined:', evt.payload?.playerName);
+
+        if (this.game) {
+          console.log('  BEFORE status:', this.game.status);
+          this.game.status = evt.gameStatus || this.game.status;
+          console.log('  AFTER status:', this.game.status);
+        }
+
+        this.cdr.markForCheck();
+
+        // Load full state snapshot
         this.loadStateSnapshot();
         return;
       }
