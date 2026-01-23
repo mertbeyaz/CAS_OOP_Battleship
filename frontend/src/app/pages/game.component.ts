@@ -168,6 +168,9 @@ export class GameComponent implements OnInit, OnDestroy {
   private chatSub?: StompSubscription;
   private lobbySub?: StompSubscription;
 
+  // Polling for WAITING status
+  private pollingInterval: any;
+
   // Chat
   chatMessages: ChatDto[] = [];
   chatInput = '';
@@ -182,6 +185,7 @@ export class GameComponent implements OnInit, OnDestroy {
    */
   ngOnInit(): void {
     const state = (history.state as { myBoard?: BoardStateDto }) || {};
+
     if (state.myBoard) {
       this.myBoardState = state.myBoard;
       this.boardWidth = state.myBoard.width;
@@ -217,6 +221,9 @@ export class GameComponent implements OnInit, OnDestroy {
     this.chatSub?.unsubscribe();
     this.lobbySub?.unsubscribe();
     this.stomp?.deactivate();
+
+    // Stop polling
+    this.stopWaitingPolling();
   }
 
   // ----------------------------
@@ -299,6 +306,13 @@ export class GameComponent implements OnInit, OnDestroy {
           this.connectWs();
           this.loadChatHistory();
           this.cdr.markForCheck();
+
+          // Start polling if WAITING, stop otherwise
+          if (this.game.status === 'WAITING') {
+            this.startWaitingPolling();
+          } else {
+            this.stopWaitingPolling();
+          }
         },
       });
   }
@@ -871,5 +885,57 @@ export class GameComponent implements OnInit, OnDestroy {
       }),
     });
     this.chatInput = '';
+  }
+
+  // ----------------------------
+  // Polling for WAITING status
+  // ----------------------------
+  /**
+   * Starts polling for game state while in WAITING status.
+   * This ensures we catch status changes even if WebSocket events are missed.
+   * Stops automatically when status changes to SETUP or other.
+   */
+  private startWaitingPolling() {
+    // Don't start multiple intervals
+    if (this.pollingInterval) {
+      return;
+    }
+
+    console.log('🔄 Starting WAITING status polling (every 2s)...');
+
+    let pollCount = 0;
+    const maxPolls = 15; // Max 30 seconds (15 * 2s)
+
+    this.pollingInterval = setInterval(() => {
+      pollCount++;
+
+      // Check if still waiting
+      if (this.game?.status !== 'WAITING') {
+        console.log('✅ Status changed to:', this.game?.status, '- stopping polling');
+        this.stopWaitingPolling();
+        return;
+      }
+
+      // Max polling limit
+      if (pollCount >= maxPolls) {
+        console.log('⏱️ Max polling attempts reached (30s)');
+        this.stopWaitingPolling();
+        return;
+      }
+
+      console.log(`🔄 Poll ${pollCount}/${maxPolls}: Checking for second player...`);
+      this.loadStateSnapshot();
+    }, 2000); // Poll every 2 seconds
+  }
+
+  /**
+   * Stops the WAITING status polling.
+   */
+  private stopWaitingPolling() {
+    if (this.pollingInterval) {
+      console.log('⏹️ Stopping WAITING status polling');
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+    }
   }
 }
