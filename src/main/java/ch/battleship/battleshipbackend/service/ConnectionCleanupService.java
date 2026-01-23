@@ -1,6 +1,8 @@
 package ch.battleship.battleshipbackend.service;
 
+import ch.battleship.battleshipbackend.domain.Game;
 import ch.battleship.battleshipbackend.domain.PlayerConnection;
+import ch.battleship.battleshipbackend.repository.GameRepository;
 import ch.battleship.battleshipbackend.repository.PlayerConnectionRepository;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +38,10 @@ public class ConnectionCleanupService {
 
     private final PlayerConnectionRepository connectionRepository;
 
+    private final GameRepository gameRepository;
+
+    @Value("${websocket.disconnect.grace-period-ms:15000}")
+    private long gracePeriodMs;
     /**
      * How often the cleanup task runs (in milliseconds).
      * Configurable via {@code connection.cleanup.interval-ms}.
@@ -95,6 +101,37 @@ public class ConnectionCleanupService {
             log.debug("No old connections to clean up");
         }
     }
+
+    /**
+     * Checks if a player is currently connected to a game.
+     * Uses the same grace period as WebSocketEventListener for consistency.
+     */
+    public boolean isPlayerConnected(String gameCode, String playerId) {
+        Game game = gameRepository.findByGameCode(gameCode).orElse(null);
+        if (game == null) {
+            log.debug("Game not found: {}", gameCode);
+            return false;
+        }
+
+        List<PlayerConnection> connections = connectionRepository.findByGame(game);
+
+        // ⭐ Convert ms to seconds for Duration
+        Instant threshold = Instant.now().minusMillis(gracePeriodMs);
+
+        boolean isConnected = connections.stream()
+                .filter(conn -> conn.getPlayer().getId().equals(playerId))
+                .anyMatch(conn -> conn.getLastSeen().isAfter(threshold));
+
+        log.debug("Player {} in game {} - gracePeriod: {}ms, isConnected: {}",
+                playerId, gameCode, gracePeriodMs, isConnected);
+
+        return isConnected;
+    }
+
+    public boolean isPlayerDisconnected(String gameCode, String playerId) {
+        return !isPlayerConnected(gameCode, playerId);
+    }
+
 
     /**
      * Manually triggers the cleanup process.
