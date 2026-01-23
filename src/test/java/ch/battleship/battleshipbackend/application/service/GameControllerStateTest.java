@@ -49,6 +49,7 @@ class GameControllerStateTest {
                 GameStatus.RUNNING,
                 10,
                 10,
+                PLAYER_ID.toString(),
                 "PlayerA",
                 "PlayerB",
                 true,

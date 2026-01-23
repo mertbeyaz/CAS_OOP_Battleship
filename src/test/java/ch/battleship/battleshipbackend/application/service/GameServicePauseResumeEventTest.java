@@ -148,7 +148,7 @@ class GameServicePauseResumeEventTest {
      * On step 1 the game is not RUNNING yet, therefore {@code currentTurnPlayerName} must be null.</p>
      */
     @Test
-    void resumeGame_firstPlayer_shouldSetWaiting_andSendResumePendingEvent() {
+    void resumeGame_firstPlayer_shouldSetWaiting_andSendResumedEvent() {
         // Arrange
         when(gameResumeTokenRepository.findByToken(TOKEN_A)).thenReturn(Optional.of(tokenA));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
@@ -171,15 +171,18 @@ class GameServicePauseResumeEventTest {
 
         assertThat(resp.snapshot()).isNotNull();
 
-        // Assert: WS event RESUME_PENDING
+        // Assert: WS event GAME_RESUMED (changed from GAME_RESUME_PENDING!)
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate).convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
         GameEventDto evt = captor.getValue();
-        assertEquals(GameEventType.GAME_RESUME_PENDING, evt.type());
+        // ⭐ CHANGED: GAME_RESUMED instead of GAME_RESUME_PENDING
+        assertEquals(GameEventType.GAME_RESUMED, evt.type());
         assertEquals(GAME_CODE, evt.gameCode());
-        assertEquals(GameStatus.WAITING, evt.gameStatus());
+        assertEquals(GameStatus.WAITING, evt.gameStatus());  // Status is WAITING!
         assertEquals("PlayerA", evt.payload().get("requestedByPlayerName"));
+        // ⭐ currentTurnPlayerName should be null (not running yet)
+        assertNull(evt.payload().get("currentTurnPlayerName"));
     }
 
     /**
@@ -190,18 +193,15 @@ class GameServicePauseResumeEventTest {
      * include {@code currentTurnPlayerName}.</p>
      */
     @Test
-    void resumeGame_secondPlayer_shouldSetRunning_andSendGameResumedEvent() {
+    void resumeGame_secondPlayer_shouldSetRunning_andSendResumedEvent() {
         // Arrange
         when(gameResumeTokenRepository.findByToken(TOKEN_B)).thenReturn(Optional.of(tokenB));
         when(gameRepository.save(any(Game.class))).thenAnswer(inv -> inv.getArgument(0));
         when(gameResumeTokenRepository.save(any(GameResumeToken.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        // Handshake already started by PlayerA
         game.setStatus(GameStatus.WAITING);
-        game.setResumeReadyPlayerId(PLAYER_A_ID);
-
-        // Ensure a deterministic current-turn for this test
-        game.setCurrentTurnPlayerId(PLAYER_A_ID);
+        game.setResumeReadyPlayerId(playerA.getId());  // PlayerA already resumed
+        game.setCurrentTurnPlayerId(playerA.getId());  // Assume PlayerA's turn
 
         // Act
         GameResumeResponseDto resp = gameService.resumeGame(TOKEN_B);
@@ -212,20 +212,21 @@ class GameServicePauseResumeEventTest {
         assertThat(resp.handshakeComplete()).isTrue();
         assertThat(resp.requestedByPlayerName()).isEqualTo("PlayerB");
 
-        // Now we are RUNNING -> turn name must be available
-        assertThat(resp.currentTurnPlayerName()).isEqualTo("PlayerA");
+        // Running now -> turn should be announced
+        assertEquals("PlayerA", resp.currentTurnPlayerName());
 
         assertThat(resp.snapshot()).isNotNull();
 
-        // Assert: WS event RESUMED
+        // Assert: WS event GAME_RESUMED
         ArgumentCaptor<GameEventDto> captor = ArgumentCaptor.forClass(GameEventDto.class);
         verify(messagingTemplate).convertAndSend(eq("/topic/games/" + GAME_CODE + "/events"), captor.capture());
 
         GameEventDto evt = captor.getValue();
         assertEquals(GameEventType.GAME_RESUMED, evt.type());
         assertEquals(GAME_CODE, evt.gameCode());
-        assertEquals(GameStatus.RUNNING, evt.gameStatus());
+        assertEquals(GameStatus.RUNNING, evt.gameStatus());  // Status is RUNNING!
         assertEquals("PlayerB", evt.payload().get("requestedByPlayerName"));
+        assertEquals("PlayerA", evt.payload().get("currentTurnPlayerName"));  // Turn announced!
     }
 
     /**
