@@ -152,11 +152,13 @@ class LobbyServiceTest {
 
     /**
      * Scenario: A second player joins an existing WAITING lobby.
-     * The lobby must become FULL and a WebSocket event must be published to:
+     * The lobby must become FULL and WebSocket events must be published:
+     * <ul>
+     *   <li>PLAYER_JOINED to /topic/games/{gameCode}/events (from GameService)</li>
+     *   <li>LOBBY_FULL to /topic/lobbies/{lobbyCode}/events (from LobbyService)</li>
+     * </ul>
      *
-     * <pre>{@code /topic/lobbies/{lobbyCode}/events}</pre>
-     *
-     * <p>The event must be a {@link LobbyEventType#LOBBY_FULL} DTO and contain:</p>
+     * <p>The LOBBY_FULL event must contain:</p>
      * <ul>
      *   <li>lobbyCode</li>
      *   <li>gameCode</li>
@@ -196,15 +198,14 @@ class LobbyServiceTest {
         assertThat(result.getStatus()).isEqualTo(LobbyStatus.FULL);
         verify(lobbyRepository).save(lobby);
 
-        // Assert: WebSocket publish
-        String destination = "/topic/lobbies/" + lobbyCode + "/events";
+        // Assert: LOBBY_FULL event published (ignoring PLAYER_JOINED from GameService)
+        String lobbyDestination = "/topic/lobbies/" + lobbyCode + "/events";
 
         verify(messagingTemplate).convertAndSend(
-                eq(destination),
+                eq(lobbyDestination),
                 argThat(matchesLobbyFullEvent(lobbyCode, gameCode, joiningUsername))
         );
 
-        verifyNoMoreInteractions(messagingTemplate);
     }
 
     /**
