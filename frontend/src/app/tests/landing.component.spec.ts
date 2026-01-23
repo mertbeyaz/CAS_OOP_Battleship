@@ -11,8 +11,6 @@ describe('LandingComponent', () => {
   let router: Router;
 
   beforeEach(() => {
-    localStorage.clear();
-
     TestBed.configureTestingModule({
       imports: [LandingComponent, HttpClientTestingModule, RouterTestingModule],
     });
@@ -60,9 +58,6 @@ describe('LandingComponent', () => {
 
     expect(component.loadingQuick).toBeFalse();
     expect(router.navigate).toHaveBeenCalled();
-
-    const stored = localStorage.getItem('resumePlayer:T1');
-    expect(stored).toContain('"gameCode":"G1"');
   });
 
   it('joinByCode sets error when resume token is empty', () => {
@@ -81,11 +76,6 @@ describe('LandingComponent', () => {
     const component = fixture.componentInstance;
 
     const token = 'T2';
-    localStorage.setItem(
-      `resumePlayer:${token}`,
-      JSON.stringify({ gameCode: 'G2', playerId: 'P2', playerName: 'Max' })
-    );
-
     component.resumeTokenJoin = token;
     component.joinByCode();
 
@@ -95,6 +85,11 @@ describe('LandingComponent', () => {
 
     req.flush({
       status: 'WAITING',
+      snapshot: {
+        gameCode: 'G2',
+        yourPlayerId: 'P2',
+        youName: 'Max',
+      },
     });
 
     expect(component.loadingJoin).toBeFalse();
