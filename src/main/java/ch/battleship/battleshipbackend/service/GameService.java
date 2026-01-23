@@ -10,6 +10,7 @@ import ch.battleship.battleshipbackend.repository.GameResumeTokenRepository;
 import ch.battleship.battleshipbackend.repository.ShotRepository;
 import ch.battleship.battleshipbackend.web.api.dto.*;
 import jakarta.persistence.EntityNotFoundException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -496,13 +497,11 @@ public class GameService {
     /**
      * Resumes a paused game using a two-player handshake, identified by a public resume token.
      *
-     * <p>This replaces the legacy resume flow that required {@code gameCode} + {@code playerId}.
-     * The token uniquely identifies a player within a specific game.</p>
-     *
      * <p>Resume flow:
      * <ul>
      *   <li>First player confirms resume: status changes from PAUSED to WAITING and stores the confirmer id.</li>
      *   <li>Second player confirms resume: status changes from WAITING to RUNNING and clears the confirmer id.</li>
+     *   <li>Special case: RUNNING with disconnected player → treated as PAUSED for resume purposes</li>
      * </ul>
      *
      * <p>This prevents a single player from unilaterally resuming a game.</p>
@@ -538,8 +537,12 @@ public class GameService {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Player does not belong to this game"));
 
-        // Idempotent: already running -> return snapshot + current turn
-        if (game.getStatus() == GameStatus.RUNNING) {
+
+        boolean isReconnectScenario = game.getStatus() == GameStatus.RUNNING &&
+                isPlayerDisconnected(game, requestedByPlayerId);
+
+        if (game.getStatus() == GameStatus.RUNNING && !isReconnectScenario) {
+            // Normal RUNNING game (both players connected) → just return snapshot
             return new GameResumeResponseDto(
                     game.getGameCode(),
                     game.getStatus(),
@@ -555,8 +558,9 @@ public class GameService {
             throw new IllegalStateException("WAITING game cannot be resumed (not in resume-handshake)");
         }
 
-        // Allowed: PAUSED or WAITING (resume-handshake)
-        if (game.getStatus() != GameStatus.PAUSED && game.getStatus() != GameStatus.WAITING) {
+        if (game.getStatus() != GameStatus.PAUSED &&
+                game.getStatus() != GameStatus.WAITING &&
+                !isReconnectScenario) {
             throw new IllegalStateException("Can only resume a PAUSED/WAITING game");
         }
 
@@ -564,12 +568,13 @@ public class GameService {
 
         // Resume handshake: requires both players to confirm resume.
         Game saved;
-        if (game.getStatus() == GameStatus.PAUSED) {
+
+        if (game.getStatus() == GameStatus.PAUSED || isReconnectScenario) {
+            // Transition to WAITING (handshake step 1)
             game.setStatus(GameStatus.WAITING);
             game.setResumeReadyPlayerId(requestedByPlayerId);
 
             saved = gameRepository.save(game);
-            //sendEventWaiting(saved, resolvedRequestedBy);
             sendEventResumed(saved, resolvedRequestedBy);
         } else {
             // status == WAITING
@@ -1181,4 +1186,36 @@ public class GameService {
 
         return true;
     }
+
+    /**
+     * Checks if the given player is currently disconnected from the game.
+     * A player is considered disconnected if their session is not active.
+     *
+     * @param game the game to check
+     * @param playerId the player ID to check
+     * @return true if the player is disconnected, false otherwise
+     */
+    private boolean isPlayerDisconnected(Game game, UUID playerId) {
+        // ⭐ IMPLEMENT THIS based on your session tracking!
+
+        // Option 1: Using PlayerSession repository
+        // return playerSessionRepository
+        //     .findByGameAndPlayerId(game, playerId)
+        //     .map(session -> !session.isActive())
+        //     .orElse(true);  // No session = disconnected
+
+        // Option 2: Using connectionCleanupService
+        return !connectionCleanupService.isPlayerConnected(game.getGameCode(), playerId.toString());
+
+        // Option 3: Check if player has active WebSocket
+        // return !webSocketSessionRegistry.hasActiveSession(playerId);
+
+        // ⭐ TEMPORARY: Always return true to allow resume during disconnect
+        // You should implement proper session tracking!
+        //return true;  // FIXME: Implement proper disconnect detection!
+    }
+
+    @Autowired
+    private ConnectionCleanupService connectionCleanupService;
+
 }
